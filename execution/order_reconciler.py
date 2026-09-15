@@ -72,7 +72,7 @@ class OrderReconciler:
             "side": close_side,
             "type": "LIMIT",
             "timeInForce": "GTC",
-            "price": round(tp_price, 1),
+            "price": tp_price,
             "quantity": qty,
             "reduceOnly": "true",
         }
@@ -84,7 +84,7 @@ class OrderReconciler:
             "symbol": self.symbol,
             "side": close_side,
             "type": "STOP_MARKET",
-            "triggerPrice": round(sl_price, 1),
+            "triggerPrice": sl_price,
             "workingType": "MARK_PRICE",  # Mark price trigger prevents wick manipulation
             "quantity": qty,
             "reduceOnly": "true",
