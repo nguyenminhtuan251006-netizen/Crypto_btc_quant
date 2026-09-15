@@ -1,0 +1,31 @@
+# Environment variables & secrets (CRITICAL: DO NOT COMMIT)
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Large dataset files
+*.parquet
+data/*.parquet
+data_remote/
+2026-09-11.parquet
+
+# Machine learning models (large binary weights)
+models/*.joblib
+models/*.pkl
+models/*.bin
+
+# System and IDE
+.DS_Store
+*.pid
+.vscode/
+.idea/

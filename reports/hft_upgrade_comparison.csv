@@ -1,0 +1,5 @@
+Model,Features,Accuracy (%),Initial Capital (USDT),Final Capital (USDT),Total Return (%),Max Drawdown (%),Sharpe Ratio,Win Rate (%),Profit Factor,Total Trades
+Buy & Hold (BTC),-,-,6.0,7.46,24.28,-,-,-,-,1
+V1: Original XGBoost,14 (candles only),69.35,6.0,1.84,-69.3,69.71,-24.78,39.84,0.54,251
+V2: HFT Taker (0.04% fee),26 (candles + HFT),73.49,6.0,3.23,-46.14,54.0,-23.75,37.43,0.54,179
+V2: HFT Maker (Oxford Paper),26 (candles + HFT),73.49,6.0,7.15,19.17,0.0,269.63,100.0,999.0,12

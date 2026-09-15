@@ -1,0 +1,4 @@
+Model,Initial Capital (USDT),Final Capital (USDT),Total Return (%),Is Doubled (x2)?,Max Drawdown (%),Sharpe Ratio,Win Rate (%),Profit Factor,Total Trades
+Buy & Hold (Bitcoin),6.0,7.39,23.16,Chưa,5.75,-,-,-,1
+Linear Regression,6.0,0.85,-85.81,Chưa,87.37,-12.93,43.41,0.68,698
+XGBoost (Polymarket 5m),6.0,7.54,25.62,Chưa,35.74,4.44,46.39,1.12,166
