@@ -348,7 +348,8 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
                         
                         # 4. Immediately Place Verified Hard Protection Orders on Binance (Sections 1.2 & 5)
                         time.sleep(0.4)
-                        r_tp, r_sl = reconciler.place_verified_protection_orders(
+                        target_reconciler = OrderReconciler(client, symbol=target_sym)
+                        r_tp, r_sl = target_reconciler.place_verified_protection_orders(
                             position_side=decision.signal,
                             qty=qty,
                             tp_price=tp_price,
@@ -371,8 +372,8 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
                         prev_amt = qty if decision.signal == 1 else -qty
                         prev_equity = equity
                         entry_timestamp = time.time()
-
-            prev_amt = amt
+                    else:
+                        prev_amt = 0.0
 
         except Exception as e:
             err_msg = f"[{now_str}] ⚠️ Lỗi vòng lặp daemon: {e}"
