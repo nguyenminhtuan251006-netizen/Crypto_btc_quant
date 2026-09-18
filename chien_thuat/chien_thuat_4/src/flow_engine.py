@@ -14,6 +14,25 @@ def winsorize_z(z_val: float, limit: float = 3.0) -> float:
     return float(np.clip(z_val, -limit, limit))
 
 
+def normalize_score_100(abs_z_score: float) -> int:
+    """Convert absolute Z-score to intuitive 0-100 scale using sigmoid mapping.
+
+    Mapping landmarks:
+        |Z| = 0.0  -> 50  (neutral)
+        |Z| = 1.25 -> ~75 (LIQUID threshold)
+        |Z| = 1.55 -> ~80 (ASIA/RANGE threshold)
+        |Z| = 2.0  -> ~88
+        |Z| >= 3.0 -> ~95 (cap)
+    """
+    # Sigmoid-like: score = 50 + 50 * tanh(k * |Z|),  k calibrated so |Z|=1.25 -> ~75
+    k = 0.8  # tanh(0.8 * 1.25) = tanh(1.0) ≈ 0.762 -> 50 + 50*0.762 = 88.1 (too high)
+    # Better calibration: k=0.55 -> tanh(0.55*1.25)=tanh(0.6875)≈0.596 -> 50+50*0.596=79.8
+    # k=0.48 -> tanh(0.48*1.25)=tanh(0.60)≈0.537 -> 50+50*0.537=76.9 ✓
+    k = 0.48
+    raw = 50.0 + 50.0 * float(np.tanh(k * abs(abs_z_score)))
+    return int(np.clip(round(raw), 0, 100))
+
+
 class FlowFeatureEngine:
     """Calculates order flow, microstructural, and crowding indicators for a single symbol."""
 
@@ -29,6 +48,8 @@ class FlowFeatureEngine:
         index_price: float = 0.0,
         open_interest: float = 0.0,
         prev_open_interest: float = 0.0,
+        taker_buy_sell_ratio: float = 1.0,
+        long_short_ratio: float = 1.0,
     ) -> Dict[str, float]:
         """
         Extract raw features for a single symbol.
@@ -111,6 +132,14 @@ class FlowFeatureEngine:
         atr14 = pd.Series(tr).rolling(14).mean().iloc[-1] if len(tr) >= 14 else (high_15m[-1] - low_15m[-1])
         atr_pct = float(atr14 / (cur_price + 1e-9))
 
+        # 8. Taker Buy/Sell Bias (Multi-Agent Analyzer §3 & §7)
+        # ratio > 1.0 = taker buy dominant, < 1.0 = taker sell dominant
+        taker_bias = float(taker_buy_sell_ratio - 1.0)  # Centered around 0
+
+        # 9. Long/Short Account Ratio Bias (Multi-Agent Analyzer §3)
+        # ratio > 1.0 = more longs than shorts (potential crowding if extreme)
+        ls_bias = float(long_short_ratio - 1.0)  # Centered around 0
+
         return {
             "symbol": symbol,
             "current_price": cur_price,
@@ -125,4 +154,6 @@ class FlowFeatureEngine:
             "funding_raw": float(funding_rate),
             "funding_z": float(funding_centered),
             "basis_z": float(basis_centered),
+            "taker_bias": taker_bias,
+            "ls_bias": ls_bias,
         }

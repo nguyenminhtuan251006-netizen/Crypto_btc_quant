@@ -3,12 +3,15 @@ Binance Futures Bot Safety & Risk Management Module
 ===================================================
 Implements institutional-grade risk management conforming to:
 'Binance Futures Bot Safety & Risk Management Specification'
++ AFCX v3 Dual Session Architecture extensions.
 
 Features:
 1. Risk-Based Position Sizing (Notional = Risk Amount / Stop Distance %)
 2. Volatility-Aware Dynamic Stops (ATR-based SL & R-Multiple TP)
 3. Account-Level Kill Switch (Consecutive losses, daily loss %, spread spike filter)
 4. Leverage & Exchange Limits Verification
+5. Session-Boundary Reset (v3): Reset consecutive_losses at LIQUID↔ASIA boundary
+6. Account Drawdown Circuit Breaker (v3): Hard stop at 6% total drawdown
 """
 import os
 import json
@@ -26,7 +29,8 @@ class RiskManager:
         risk_fraction: float = 0.005,       # 0.5% risk of equity per trade
         max_consecutive_losses: int = 3,    # Kill switch after 3 consecutive losses
         max_daily_loss_pct: float = 0.02,   # Kill switch after 2% loss in a single day
-        max_spread_pct: float = 0.0005,     # 0.05% max spread allowed for entry
+        max_spread_pct: float = 0.0005,     # 0.05% max spread allowed for entry (default, can override per-session)
+        max_account_drawdown_pct: float = 0.06,  # Hard stop at 6% total account drawdown (v3)
         atr_multiplier_sl: float = 1.2,     # k * ATR for Stop Loss (baseline 1.2)
         r_multiple_tp: float = 1.5,         # Take profit = 1.5 * Stop distance
         min_sl_pct: float = 0.003,          # Minimum 0.3% stop distance
@@ -39,6 +43,7 @@ class RiskManager:
         self.max_consecutive_losses = max_consecutive_losses
         self.max_daily_loss_pct = max_daily_loss_pct
         self.max_spread_pct = max_spread_pct
+        self.max_account_drawdown_pct = max_account_drawdown_pct
         self.atr_multiplier_sl = atr_multiplier_sl
         self.r_multiple_tp = r_multiple_tp
         self.min_sl_pct = min_sl_pct
@@ -56,6 +61,7 @@ class RiskManager:
             "consecutive_losses": 0,
             "daily_loss_amount": 0.0,
             "day_start_equity": 0.0,
+            "account_peak_equity": 0.0,   # Track peak equity for drawdown check (v3)
             "current_date": str(date.today()),
             "is_tripped": False,
             "trip_reason": "",
@@ -75,6 +81,8 @@ class RiskManager:
                     if saved.get("current_date") != today_str:
                         saved["current_date"] = today_str
                         saved["daily_loss_amount"] = 0.0
+                        saved["consecutive_losses"] = 0
+                        saved["day_start_equity"] = 0.0
                         saved["is_tripped"] = False
                         saved["trip_reason"] = ""
                     self.state.update(saved)
@@ -97,13 +105,15 @@ class RiskManager:
         equity: float,
         stop_distance_pct: float,
         current_price: float,
+        min_notional: float = 0.0,
     ) -> Tuple[float, float, Dict[str, Any]]:
         """
         Calculate quantity and notional based on intended equity risk.
+        Supports Micro-Capital Mode via min_notional floor (e.g. 5.5 USDT for 150k VND capital).
         
         Formula:
             risk_amount = equity * risk_fraction
-            position_notional = risk_amount / stop_distance_pct
+            position_notional = max(risk_amount / stop_distance_pct, min_notional)
             qty = position_notional / current_price
         """
         if equity <= 0 or stop_distance_pct <= 0 or current_price <= 0:
@@ -112,9 +122,11 @@ class RiskManager:
         # 1. Intended dollar risk
         risk_amount = equity * self.risk_fraction
 
-        # 2. Position notional from risk
+        # 2. Position notional from risk (with Micro-Capital floor clamp)
         clamped_stop = max(stop_distance_pct, 0.001)
         position_notional = risk_amount / clamped_stop
+        if min_notional > 0:
+            position_notional = max(position_notional, min_notional)
 
         # 3. Leverage and Margin Constraints
         max_notional_by_leverage = equity * self.max_leverage * 0.95  # 5% safety buffer for fees
@@ -134,6 +146,7 @@ class RiskManager:
             "position_notional": round(actual_notional, 2),
             "allocated_qty": qty,
             "margin_required_usdt": round(actual_notional / self.max_leverage, 2),
+            "micro_capital_active": min_notional > 0,
         }
         return qty, actual_notional, sizing_info
 
@@ -194,9 +207,11 @@ class RiskManager:
         current_equity: float,
         current_spread_pct: float = 0.0,
         data_freshness_seconds: float = 0.0,
+        session_max_spread_pct: Optional[float] = None,
     ) -> Tuple[bool, str]:
         """
         Verifies all circuit breakers before allowing a new trade entry.
+        Supports per-session spread override via session_max_spread_pct (v3 Review Issue 3).
         
         Returns:
             (can_trade: bool, message: str)
@@ -206,6 +221,11 @@ class RiskManager:
         # Update day start equity if not initialized
         if self.state["day_start_equity"] <= 0:
             self.state["day_start_equity"] = current_equity
+            self._save_state()
+
+        # Update peak equity for drawdown tracking (v3)
+        if current_equity > self.state.get("account_peak_equity", 0.0):
+            self.state["account_peak_equity"] = current_equity
             self._save_state()
 
         # 1. Already tripped check
@@ -230,11 +250,22 @@ class RiskManager:
                 self._save_state()
                 return False, f"🚨 KILL SWITCH KÍCH HOẠT: {self.state['trip_reason']}"
 
-        # 4. Spread Spike Filter
-        if current_spread_pct > self.max_spread_pct:
-            return False, f"⚠️ SPREAD QUÁ RỘNG: {current_spread_pct*100:.3f}% > {self.max_spread_pct*100:.3f}% (Bảo vệ trượt giá)"
+        # 4. Account Drawdown Circuit Breaker (v3 Review Issue 6)
+        peak = self.state.get("account_peak_equity", 0.0)
+        if peak > 0 and current_equity > 0:
+            drawdown_pct = (peak - current_equity) / peak
+            if drawdown_pct >= self.max_account_drawdown_pct:
+                self.state["is_tripped"] = True
+                self.state["trip_reason"] = f"Drawdown tài khoản đạt {drawdown_pct*100:.2f}% (Trần: {self.max_account_drawdown_pct*100:.1f}%)"
+                self._save_state()
+                return False, f"🚨 KILL SWITCH KÍCH HOẠT: {self.state['trip_reason']}"
 
-        # 5. Data Freshness Filter
+        # 5. Spread Spike Filter (supports per-session override)
+        effective_spread_limit = session_max_spread_pct if session_max_spread_pct is not None else self.max_spread_pct
+        if current_spread_pct > effective_spread_limit:
+            return False, f"⚠️ SPREAD QUÁ RỘNG: {current_spread_pct*100:.3f}% > {effective_spread_limit*100:.3f}% (Bảo vệ trượt giá)"
+
+        # 6. Data Freshness Filter
         if data_freshness_seconds > 60.0:
             return False, f"⚠️ DỮ LIỆU BỊ TRỄ: {data_freshness_seconds:.1f}s > 60s (Dừng vào lệnh chờ kết nối ổn định)"
 
@@ -259,7 +290,28 @@ class RiskManager:
         self.state["daily_loss_amount"] = 0.0
         self.state["is_tripped"] = False
         self.state["trip_reason"] = ""
+        self.state["current_date"] = str(date.today())
         if new_start_equity:
             self.state["day_start_equity"] = new_start_equity
+        else:
+            self.state["day_start_equity"] = 0.0
         self._save_state()
         print("[RiskManager] Đã đặt lại Kill Switch thành công.")
+
+    def session_boundary_reset(self, new_session_name: str):
+        """
+        Reset consecutive_losses counter when crossing a session boundary (v3 Review Issue 1).
+        Keeps daily_loss_amount and day_start_equity untouched for global daily protection.
+        """
+        self._load_state()
+        old_streak = self.state["consecutive_losses"]
+        was_tripped = self.state["is_tripped"]
+
+        # Only reset if tripped by consecutive losses, NOT by daily loss or drawdown
+        if was_tripped and "lệnh thua liên tiếp" in self.state.get("trip_reason", ""):
+            self.state["is_tripped"] = False
+            self.state["trip_reason"] = ""
+
+        self.state["consecutive_losses"] = 0
+        self._save_state()
+        print(f"[RiskManager] Session boundary → {new_session_name}: Reset chuỗi thua {old_streak} → 0 (daily loss giữ nguyên)")

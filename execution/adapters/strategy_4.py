@@ -29,6 +29,7 @@ class Strategy4Adapter(BaseStrategy):
             stop_loss_pct=0.006,
         )
         self.afcx = AFCXStrategy(name="chien_thuat_4", leverage=self.leverage)
+        self.session_mgr = self.afcx.session_mgr
 
     def initialize(self):
         """Initialize AFCX universe and cache metadata."""

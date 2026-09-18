@@ -12,7 +12,7 @@ Implements Sections 11, 12, 13, 14, 15, 16, 17 of the AFCX Specification:
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Any, Tuple, Optional
-from .flow_engine import winsorize_z
+from .flow_engine import winsorize_z, normalize_score_100
 
 
 class CrossSectionalRanker:
@@ -44,7 +44,7 @@ class CrossSectionalRanker:
         df = pd.DataFrame(raw_features_list)
 
         # Cross-sectional Z-score normalization for each metric (Section 8)
-        norm_cols = ["m_1h", "m_4h", "ofi_15m", "oi_confirmation", "book_imbalance", "rel_volume", "funding_z", "basis_z"]
+        norm_cols = ["m_1h", "m_4h", "ofi_15m", "oi_confirmation", "book_imbalance", "rel_volume", "funding_z", "basis_z", "taker_bias", "ls_bias"]
         for col in norm_cols:
             if col in df.columns:
                 vals = df[col].to_numpy(dtype=float)
@@ -61,24 +61,39 @@ class CrossSectionalRanker:
         # Market-wide Network Momentum (mean momentum of the universe)
         net_momentum = float(df["z_m_1h"].mean())
 
+        # Check if extended multi-agent features are actively present
+        has_extended = ("z_taker_bias" in df.columns and df["z_taker_bias"].abs().sum() > 1e-6)
+
         ranked_results = []
         for _, row in df.iterrows():
             sym = row["symbol"]
 
             # 1. Direction Score D_i (Section 11)
-            # Weights: 0.20 M_1h + 0.15 M_4h + 0.25 OFI_15m + 0.15 OI + 0.10 Book + 0.10 Vol + 0.05 NetMom
-            d_i = (
-                0.20 * row["z_m_1h"]
-                + 0.15 * row["z_m_4h"]
-                + 0.25 * row["z_ofi_15m"]
-                + 0.15 * row["z_oi_confirmation"]
-                + 0.10 * row["z_book_imbalance"]
-                + 0.10 * row["z_rel_volume"]
-                + 0.05 * net_momentum
-            )
-
-            # 2. Crowding Penalty C_i (Section 12)
-            c_i = 0.60 * row["z_funding_z"] + 0.40 * row["z_basis_z"]
+            if has_extended:
+                d_i = (
+                    0.18 * row["z_m_1h"]
+                    + 0.12 * row["z_m_4h"]
+                    + 0.22 * row["z_ofi_15m"]
+                    + 0.13 * row["z_oi_confirmation"]
+                    + 0.08 * row["z_book_imbalance"]
+                    + 0.08 * row["z_rel_volume"]
+                    + 0.05 * net_momentum
+                    + 0.08 * row["z_taker_bias"]
+                    + 0.06 * (-row["z_ls_bias"])  # Contrarian: too many longs = bearish signal
+                )
+                c_i = 0.45 * row["z_funding_z"] + 0.30 * row["z_basis_z"] + 0.25 * abs(row["z_ls_bias"])
+            else:
+                # Standard normalized weights (sum = 1.00)
+                d_i = (
+                    0.20 * row["z_m_1h"]
+                    + 0.15 * row["z_m_4h"]
+                    + 0.25 * row["z_ofi_15m"]
+                    + 0.15 * row["z_oi_confirmation"]
+                    + 0.10 * row["z_book_imbalance"]
+                    + 0.10 * row["z_rel_volume"]
+                    + 0.05 * net_momentum
+                )
+                c_i = 0.60 * row["z_funding_z"] + 0.40 * row["z_basis_z"]
 
             # Final Score with crowding reduction
             if d_i > 0:
@@ -106,10 +121,13 @@ class CrossSectionalRanker:
                 "crowding": float(c_i),
                 "final_score": float(final_score),
                 "abs_score": float(abs(final_score)),
+                "score_100": normalize_score_100(abs(final_score)),
                 "direction": direction_sign,
                 "consensus_count": int(agreement_count),
                 "z_ofi": float(row["z_ofi_15m"]),
                 "z_m1h": float(row["z_m_1h"]),
+                "z_taker_bias": float(row["z_taker_bias"]),
+                "z_ls_bias": float(row["z_ls_bias"]),
                 "funding_raw": float(row.get("funding_raw", 0.0001)),
             })
 
@@ -160,7 +178,7 @@ class CrossSectionalRanker:
         dir_str = "LONG" if cand1["direction"] == 1 else "SHORT"
         reason = (
             f"✅ CHẤP THUẬN CƠ HỘI {dir_str} {cand1['symbol']} | "
-            f"Score: {cand1['final_score']:+.2f} (Gap: +{gap:.2f}) | "
+            f"Score: {cand1.get('score_100', '?')}/100 (Z={cand1['final_score']:+.2f}, Gap: +{gap:.2f}) | "
             f"Đồng thuận: {cand1['consensus_count']}/6 | "
             f"Biến động ATR: {cand1['atr_pct']*100:.2f}%"
         )

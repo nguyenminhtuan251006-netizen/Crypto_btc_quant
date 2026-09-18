@@ -1,8 +1,8 @@
 """
-CHIẾN THUẬT 4: AFCX (Adaptive Flow Cross-Sectional Strategy)
-============================================================
+CHIẾN THUẬT 4: AFCX (Adaptive Flow Cross-Sectional Strategy) — v3 Dual Session
+===============================================================================
 Adaptive Flow Cross-Sectional Strategy for Binance USDT-M Perpetual Futures.
-Conforms to 'AFCX Strategy Specification' and 'BaseStrategy' interface.
+Conforms to 'AFCX Strategy Specification v3' and 'BaseStrategy' interface.
 
 Core Logic:
 1. Universe Selection: Top 20 liquid Binance Perpetual contracts.
@@ -10,8 +10,9 @@ Core Logic:
 3. Feature Engineering: Momentum (1h, 4h), OFI (15m), OI Confirmation, Order Book Imbalance, Relative Volume.
 4. Crowding Penalty: Discounts crowded setups via Funding Rate Z-score and Basis Z-score.
 5. Cross-Sectional Ranking: Identifies the #1 highest qualified opportunity.
-6. Multi-Layer Gates: Confidence Gap (>=0.20), Indicator Consensus (>=4/6), Cost Gate (Edge > 3x Cost).
-7. Risk & Execution: Volatility-aware ATR(14) Stop Loss & 1.8R Take Profit.
+6. Multi-Layer Gates: Session-adaptive thresholds (v3) — LIQUID vs ASIA.
+7. Persistence Gate (v3): ASIA session requires Top 1 to persist >= 2 consecutive scans.
+8. Risk & Execution: Volatility-aware ATR(14) Stop Loss & 1.8R Take Profit.
 """
 import os
 import sys
@@ -30,6 +31,7 @@ from chien_thuat.chien_thuat_4.src.regime_engine import MarketRegimeEngine
 from chien_thuat.chien_thuat_4.src.flow_engine import FlowFeatureEngine
 from chien_thuat.chien_thuat_4.src.cross_sectional_ranker import CrossSectionalRanker
 from chien_thuat.chien_thuat_4.src.dynamic_exit import DynamicExitManager
+from chien_thuat.chien_thuat_4.src.session_manager import SessionManager
 
 
 class AFCXStrategy(BaseStrategy):
@@ -58,6 +60,7 @@ class AFCXStrategy(BaseStrategy):
         self.flow_engine = FlowFeatureEngine()
         self.ranker = CrossSectionalRanker()
         self.exit_manager = DynamicExitManager()
+        self.session_mgr = SessionManager()  # v3 Dual Session Manager
 
         self.selected_symbol: str = symbol
         self.last_rank_time = 0.0
@@ -118,6 +121,38 @@ class AFCXStrategy(BaseStrategy):
             ob_res = requests.get(f"{base_url}/fapi/v1/depth", params={"symbol": symbol, "limit": 10}, timeout=4)
             orderbook = ob_res.json() if ob_res.status_code == 200 else {}
 
+            # 5. Taker Buy/Sell Ratio (Multi-Agent Analyzer §3 & §7)
+            # NOTE: /futures/data/ endpoints only return real data from LIVE API (public, no key needed)
+            live_data_url = "https://fapi.binance.com"
+            taker_ratio = 1.0
+            try:
+                tbsr_res = requests.get(
+                    f"{live_data_url}/futures/data/takerlongshortRatio",
+                    params={"symbol": symbol, "period": "15m", "limit": 1},
+                    timeout=3,
+                )
+                if tbsr_res.status_code == 200:
+                    tbsr_data = tbsr_res.json()
+                    if isinstance(tbsr_data, list) and len(tbsr_data) > 0:
+                        taker_ratio = float(tbsr_data[0].get("buyVol", 1.0)) / max(float(tbsr_data[0].get("sellVol", 1.0)), 1e-9)
+            except Exception:
+                pass
+
+            # 6. Long/Short Account Ratio (Multi-Agent Analyzer §3)
+            ls_ratio = 1.0
+            try:
+                lsr_res = requests.get(
+                    f"{live_data_url}/futures/data/globalLongShortAccountRatio",
+                    params={"symbol": symbol, "period": "15m", "limit": 1},
+                    timeout=3,
+                )
+                if lsr_res.status_code == 200:
+                    lsr_data = lsr_res.json()
+                    if isinstance(lsr_data, list) and len(lsr_data) > 0:
+                        ls_ratio = float(lsr_data[0].get("longShortRatio", 1.0))
+            except Exception:
+                pass
+
             return {
                 "candles": candles,
                 "funding_rate": funding_rate,
@@ -125,6 +160,8 @@ class AFCXStrategy(BaseStrategy):
                 "index_price": index_price,
                 "open_interest": open_interest,
                 "orderbook": orderbook,
+                "taker_buy_sell_ratio": taker_ratio,
+                "long_short_ratio": ls_ratio,
             }
         except Exception:
             return None
@@ -147,6 +184,8 @@ class AFCXStrategy(BaseStrategy):
                     index_price=snap.get("index_price", 0.0),
                     open_interest=current_oi,
                     prev_open_interest=prev_oi,
+                    taker_buy_sell_ratio=snap.get("taker_buy_sell_ratio", 1.0),
+                    long_short_ratio=snap.get("long_short_ratio", 1.0),
                 )
                 if feats:
                     features_list.append(feats)
@@ -172,28 +211,19 @@ class AFCXStrategy(BaseStrategy):
         now_ts = time.time()
         from datetime import datetime, timezone
 
-        # Session Filter: Only trade during high-liquidity London+NY session
-        # 08:00–21:00 UTC = 15:00–04:00 VN time
-        utc_hour = datetime.now(timezone.utc).hour
-        is_active_session = 8 <= utc_hour <= 21
+        # v3: Resolve active session profile (LIQUID or ASIA)
+        session_profile = self.session_mgr.resolve_session()
 
-        # Cooldown: Wait 10 minutes after last trade closure
+        # Cooldown: Wait 10 minutes after last trade closure (Review Issue 4: keep across session boundaries)
         cooldown_seconds = 600  # 10 minutes
         in_cooldown = (now_ts - self.last_trade_close_time) < cooldown_seconds if self.last_trade_close_time > 0 else False
-
-        if not is_active_session:
-            return StrategyDecision(
-                signal=0,
-                confidence=0.0,
-                reason=f"⏸️ NGOÀI PHIÊN GIAO DỊCH: Giờ UTC {utc_hour}:00 nằm ngoài phiên London/NY (08:00–21:00 UTC)",
-            )
 
         if in_cooldown:
             remaining = int(cooldown_seconds - (now_ts - self.last_trade_close_time))
             return StrategyDecision(
                 signal=0,
                 confidence=0.0,
-                reason=f"⏳ COOLDOWN: Chờ {remaining}s sau lệnh trước để thị trường ổn định",
+                reason=f"⏳ COOLDOWN [{session_profile.name}]: Chờ {remaining}s sau lệnh trước để thị trường ổn định",
             )
 
         # Step 1: Scan and Rank Universe if cache expired (> 2 minutes)
@@ -218,38 +248,58 @@ class AFCXStrategy(BaseStrategy):
             return StrategyDecision(
                 signal=0,
                 confidence=0.0,
-                reason=f"🛑 REGIME STRESS: {regime_reason} (Khóa mở lệnh mới để bảo vệ vốn)",
+                reason=f"🛑 REGIME STRESS [{session_profile.name}]: {regime_reason} (Khóa mở lệnh mới để bảo vệ vốn)",
             )
 
         if not ranked or len(ranked) < 2:
             return StrategyDecision(
                 signal=0,
                 confidence=0.0,
-                reason="Đang thu thập dữ liệu luân chuyển vốn từ vũ trụ Binance...",
+                reason=f"[{session_profile.name}] Đang thu thập dữ liệu luân chuyển vốn từ vũ trụ Binance...",
             )
 
-        # In RANGE or TRANSITION, raise the entry threshold (Section 10)
-        # Normal threshold = 1.25. If RANGE/TRANSITION, require >= 1.35
-        active_threshold = 1.25 if regime == "TREND" else 1.35
-        self.ranker.min_abs_score = active_threshold
+        # v3: Apply session-adaptive thresholds (Spec Section 4)
+        active_z = session_profile.trend_z_min if regime == "TREND" else session_profile.range_z_min
+        self.ranker.min_abs_score = active_z
+        self.ranker.min_score_gap = session_profile.confidence_gap_min
+        self.ranker.min_consensus = session_profile.consensus_min
+        self.ranker.cost_ratio_threshold = session_profile.cost_multiple_min
 
         # Step 3: Evaluate Candidate #1 against Gates (Confidence, Consensus, Cost)
         qualified, candidate, gate_reason = self.ranker.evaluate_top_candidate(ranked)
 
-        top_summary = f"Top 1: {ranked[0]['symbol']} ({ranked[0]['final_score']:+.2f}) | Top 2: {ranked[1]['symbol']} ({ranked[1]['final_score']:+.2f})"
+        top_summary = f"[{session_profile.name}] Top 1: {ranked[0]['symbol']} ({ranked[0].get('score_100', '?')}/100) | Top 2: {ranked[1]['symbol']} ({ranked[1].get('score_100', '?')}/100)"
 
         if not qualified or not candidate:
             return StrategyDecision(
                 signal=0,
                 confidence=float(ranked[0]["abs_score"] / 3.0),
-                reason=f"TẠM DỪNG [{regime}]: {gate_reason} [{top_summary}]",
-                extra_metrics={"ranking": ranked[:5], "regime": regime},
+                reason=f"TẠM DỪNG [{regime}/{session_profile.name}]: {gate_reason} [{top_summary}]",
+                extra_metrics={"ranking": ranked[:5], "regime": regime, "session": session_profile.name},
             )
 
         # Candidate passed all gates!
         self.selected_symbol = candidate["symbol"]
         cur_price = candidate["current_price"]
         dir_sign = candidate["direction"]
+
+        # v3 Persistence Gate: ASIA session requires Top 1 to persist (Spec Section 5)
+        passed_persist, persist_msg = self.session_mgr.check_persistence_gate(
+            candidate_symbol=self.selected_symbol,
+            candidate_direction=dir_sign,
+            now_ts=now_ts,
+            profile=session_profile,
+        )
+        if not passed_persist:
+            return StrategyDecision(
+                signal=0,
+                confidence=min(candidate["abs_score"] / 2.0, 0.95),
+                reason=f"[{session_profile.name}] {persist_msg} [{top_summary}]",
+                extra_metrics={"ranking": ranked[:5], "regime": regime, "session": session_profile.name},
+            )
+
+        # Reset persistence counter once we proceed to entry
+        self.session_mgr.reset_persistence()
 
         # Step 4: Calculate Dynamic ATR(14) Stop Loss and 1.8R Take Profit (Sections 19 & 20)
         atr_pct = candidate.get("atr_pct", 0.006)
@@ -268,7 +318,7 @@ class AFCXStrategy(BaseStrategy):
         return StrategyDecision(
             signal=dir_sign,
             confidence=min(candidate["abs_score"] / 2.0, 0.95),
-            reason=f"🚀 TÍN HIỆU AFCX [{regime}]: {gate_reason}",
+            reason=f"🚀 TÍN HIỆU AFCX [{regime}/{session_profile.name}]: {gate_reason} | {persist_msg}",
             tp_pct=tp_pct,
             sl_pct=sl_pct,
             tp_price=tp_price,
@@ -278,5 +328,7 @@ class AFCXStrategy(BaseStrategy):
                 "candidate": candidate,
                 "ranking": ranked[:5],
                 "regime": regime,
+                "session": session_profile.name,
+                "score_100": candidate.get("score_100", 80),
             },
         )

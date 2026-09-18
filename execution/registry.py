@@ -13,6 +13,7 @@ from execution.strategy_interface import BaseStrategy
 from execution.adapters.strategy_1 import Strategy1Adapter
 from execution.adapters.strategy_3 import Strategy3Adapter
 from execution.adapters.strategy_4 import Strategy4Adapter
+from execution.adapters.strategy_5 import Strategy5Adapter
 
 STRATEGY_MAP: Dict[str, Type[BaseStrategy]] = {
     "chien_thuat_1": Strategy1Adapter,
@@ -21,6 +22,8 @@ STRATEGY_MAP: Dict[str, Type[BaseStrategy]] = {
     "strategy_3": Strategy3Adapter,
     "chien_thuat_4": Strategy4Adapter,
     "strategy_4": Strategy4Adapter,
+    "chien_thuat_5": Strategy5Adapter,
+    "strategy_5": Strategy5Adapter,
 }
 
 def auto_discover_strategies():
