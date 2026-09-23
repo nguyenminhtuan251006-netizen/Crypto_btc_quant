@@ -31,7 +31,6 @@ class Strategy5Adapter(BaseStrategy):
         self.min_notional_target = self.strat.min_notional_target
         self.micro_capital_mode = self.strat.micro_capital_mode
         self.session_mgr = self.strat.session_mgr
-        self.cached_ranking = self.strat.cached_ranking
         self.last_trade_close_time = self.strat.last_trade_close_time
 
         # Trailing Parameters (Bậc Thang 2 Tầng)
@@ -42,6 +41,21 @@ class Strategy5Adapter(BaseStrategy):
         self.trailing_callback_pct = self.strat.trailing_callback_pct
         self.profit_lock_floor_pct = self.strat.profit_lock_floor_pct
         self.wide_tp_pct = self.strat.wide_tp_pct
+
+    @property
+    def cached_ranking(self):
+        """Always return real-time cached ranking from underlying strategy."""
+        return getattr(self.strat, 'cached_ranking', [])
+
+    @property
+    def last_rank_time(self):
+        return getattr(self.strat, 'last_rank_time', 0.0)
+
+    def refresh_ranking(self):
+        """Refresh universe ranking on-demand while holding position."""
+        if hasattr(self.strat, 'scan_and_rank_universe'):
+            return self.strat.scan_and_rank_universe()
+        return []
 
     def initialize(self):
         """Initialize universe and cache metadata."""
@@ -54,5 +68,4 @@ class Strategy5Adapter(BaseStrategy):
         # Update current target symbol from decision
         if decision.extra_metrics and "selected_symbol" in decision.extra_metrics:
             self.symbol = decision.extra_metrics["selected_symbol"]
-        self.cached_ranking = self.strat.cached_ranking
         return decision

@@ -211,22 +211,23 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25, mo
             # Step B: Position Reconciliation & Trade Settlement (Only for bot's registered trade)
             if abs(prev_amt) > 1e-5 and abs(amt) <= 1e-5 and active_trade:
                 # Previous bot position has just been closed by TP or SL!
-                # Query realized PnL directly from Binance API to avoid distortion from manual trades / vouchers
+                # Query Realized PnL, Commission, and Funding from Binance API for True Net PnL (Fix #5)
                 trade_pnl = equity - prev_equity
                 try:
                     income_res = client.get("/fapi/v1/income", {
                         "symbol": active_symbol,
-                        "incomeType": "REALIZED_PNL",
-                        "limit": 5
+                        "limit": 10
                     })
                     if isinstance(income_res, list) and len(income_res) > 0:
                         cutoff_ms = int((time.time() - 300) * 1000)
-                        recent_pnl = sum(
-                            float(item["income"]) for item in income_res
+                        recent_income = [
+                            item for item in income_res
                             if int(item.get("time", 0)) >= cutoff_ms
-                        )
-                        if abs(recent_pnl) > 1e-6:
-                            trade_pnl = recent_pnl
+                            and item.get("incomeType") in ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE")
+                        ]
+                        if recent_income and any(item.get("incomeType") == "REALIZED_PNL" for item in recent_income):
+                            net_income = sum(float(item.get("income", 0.0)) for item in recent_income)
+                            trade_pnl = net_income
                 except Exception:
                     pass
 
@@ -273,15 +274,28 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25, mo
                 lowest_price_seen = min(lowest_price_seen, cur_market_price)
 
                 # --- DYNAMIC EXIT MANAGER (Score Decay, Sign Flip, Trailing) ---
-                # Re-score current position by running strategy analysis
+                # Re-score current position by refreshing ranking periodically (every 120s)
                 try:
-                    if hasattr(strategy, 'cached_ranking') and strategy.cached_ranking:
+                    now_ts = time.time()
+                    last_refresh = getattr(strategy, '_last_hold_refresh_ts', 0.0)
+                    if (now_ts - last_refresh > 120.0):
+                        if hasattr(strategy, 'refresh_ranking'):
+                            strategy.refresh_ranking()
+                        elif hasattr(strategy, 'strat') and hasattr(strategy.strat, 'scan_and_rank_universe'):
+                            strategy.strat.scan_and_rank_universe()
+                        strategy._last_hold_refresh_ts = now_ts
+
+                    ranking_list = getattr(strategy, 'cached_ranking', [])
+                    if ranking_list:
                         # Find current rank and score of active symbol
                         current_score = 0.0
                         current_rank = 99
-                        for rank_idx, r in enumerate(strategy.cached_ranking):
+                        for rank_idx, r in enumerate(ranking_list):
                             if r["symbol"] == active_symbol:
-                                current_score = r["final_score"] * pos_dir  # Align score with position direction
+                                # Fix #1: Keep raw score. dynamic_exit.py already checks
+                                # (pos_dir == 1 and score < -0.20) or (pos_dir == -1 and score > 0.20).
+                                # Multiplying by pos_dir was inverting SHORT scores and causing instant false exits!
+                                current_score = float(r["final_score"])
                                 current_rank = rank_idx + 1
                                 break
 
@@ -486,17 +500,41 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25, mo
                                 continue
                         active_symbol = target_sym
                         reconciler = OrderReconciler(client, symbol=target_sym)
+
+                        # Fix #4: Check actual spread on target altcoin itself to prevent slippage
+                        target_ob = fetch_orderbook(target_sym, limit=5)
+                        cand_entry_p = decision.extra_metrics.get("candidate", {}).get("current_price", cur_price) if decision.extra_metrics else cur_price
+                        if target_ob and target_ob.get("bids") and target_ob.get("asks"):
+                            t_bid = float(target_ob["bids"][0][0])
+                            t_ask = float(target_ob["asks"][0][0])
+                            cand_entry_p = (t_bid + t_ask) / 2.0
+                            alt_spread = (t_ask - t_bid) / cand_entry_p
+                            effective_spread_limit = session_max_spread or risk_mgr.max_spread_pct
+                            if alt_spread > effective_spread_limit:
+                                sp_skip_msg = f"[{now_str}] ⚠️ BỎ QUA {target_sym}: Spread thực tế ({alt_spread*100:.3f}%) vượt ngưỡng tối đa ({effective_spread_limit*100:.3f}%), dừng vào lệnh."
+                                print(sp_skip_msg)
+                                with open(log_file, "a") as f: f.write(sp_skip_msg + "\n")
+                                time.sleep(poll_interval)
+                                continue
+
                         client.init_account_settings(target_sym, leverage=strategy.leverage)
 
                         # Generate client order IDs with session prefix (Spec Section 10)
                         cids = order_registry.generate_client_order_ids(owner=current_session_name)
 
                         # Determine target price and stops
-                        cand_entry_p = decision.extra_metrics.get("candidate", {}).get("current_price", cur_price) if decision.extra_metrics else cur_price
                         sl_pct = decision.sl_pct
-                        tp_pct = decision.tp_pct
+                        
+                        # Fix #2: Unify TP and Trailing Ratchet.
+                        # When enable_trailing is True, place Wide TP ceiling on Binance (+8%) so the exchange
+                        # does not execute prematurely before the 2-tier trailing ratchet (+1.2%/+1.8%) can operate!
+                        if enable_trailing:
+                            effective_tp_pct = wide_tp_pct
+                        else:
+                            effective_tp_pct = decision.tp_pct or (sl_pct * 1.8)
+
                         sl_price = decision.sl_price or universe_mgr.quantize_price(target_sym, cand_entry_p * (1.0 - sl_pct) if decision.signal == 1 else cand_entry_p * (1.0 + sl_pct))
-                        tp_price = decision.tp_price or universe_mgr.quantize_price(target_sym, cand_entry_p * (1.0 + tp_pct) if decision.signal == 1 else cand_entry_p * (1.0 - tp_pct))
+                        tp_price = universe_mgr.quantize_price(target_sym, cand_entry_p * (1.0 + effective_tp_pct) if decision.signal == 1 else cand_entry_p * (1.0 - effective_tp_pct))
 
                         # 2. Compute Risk-Based Position Sizing (Section 2 & 19 + Micro-Capital support)
                         min_notional_param = getattr(strategy, 'min_notional_target', 0.0)

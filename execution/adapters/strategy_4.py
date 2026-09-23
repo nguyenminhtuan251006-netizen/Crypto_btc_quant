@@ -42,6 +42,21 @@ class Strategy4Adapter(BaseStrategy):
         self.profit_lock_floor_pct = self.afcx.profit_lock_floor_pct
         self.wide_tp_pct = self.afcx.wide_tp_pct
 
+    @property
+    def cached_ranking(self):
+        """Always return real-time cached ranking from underlying strategy."""
+        return getattr(self.afcx, 'cached_ranking', [])
+
+    @property
+    def last_rank_time(self):
+        return getattr(self.afcx, 'last_rank_time', 0.0)
+
+    def refresh_ranking(self):
+        """Refresh universe ranking on-demand while holding position."""
+        if hasattr(self.afcx, 'scan_and_rank_universe'):
+            return self.afcx.scan_and_rank_universe()
+        return []
+
     def initialize(self):
         """Initialize AFCX universe and cache metadata."""
         self.afcx.initialize()
