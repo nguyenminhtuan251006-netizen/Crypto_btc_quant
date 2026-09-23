@@ -39,11 +39,11 @@ class MicroAFCXStrategy(AFCXStrategy):
         self,
         name: str = "chien_thuat_5",
         symbol: str = "ETHUSDT",
-        leverage: int = 5,
+        leverage: int = 10,
         default_qty: float = 0.001,
         take_profit_pct: float = 0.012,
         stop_loss_pct: float = 0.006,
-        min_notional_target: float = 5.5,
+        min_notional_target: float = 15.0,
     ):
         super().__init__(
             name=name,
@@ -54,12 +54,21 @@ class MicroAFCXStrategy(AFCXStrategy):
             stop_loss_pct=stop_loss_pct,
             universe_symbols=MICRO_CAPITAL_UNIVERSE,
         )
-        self.min_notional_target = min_notional_target  # 5.5 USDT sàn cho vốn 150k VNĐ
+        self.min_notional_target = min_notional_target  # 15.0 USDT sàn (ký quỹ ~1.5 USDT ở đòn bẩy 10x)
         self.micro_capital_mode = True
+
+        # Trailing Take Profit: Cơ chế Bậc Thang 2 Tầng (Chống quét râu)
+        self.enable_trailing = True
+        self.tier1_trigger_pct = 0.012          # Tầng 1: Đạt +1.2% (mốc cũ)
+        self.tier1_lock_pct = 0.010             # Ghim cứng SL tại +1.0% (chống quét râu nến)
+        self.tier2_trigger_pct = 0.018          # Tầng 2: Vượt +1.8% bùng nổ bám đỉnh
+        self.trailing_callback_pct = 0.0045     # Lùi 0.45% bám sát theo sau đỉnh
+        self.profit_lock_floor_pct = 0.0010     # Khóa tối thiểu hòa vốn
+        self.wide_tp_pct = 0.08                 # Trần chốt lời khẩn cấp +8.0%
 
     def analyze(self, market_data: Dict[str, Any]) -> StrategyDecision:
         """Kế thừa phân tích của AFCX và đính kèm nhãn Micro-Capital."""
         decision = super().analyze(market_data)
         if decision.signal != 0:
-            decision.reason = f"[VỐN 150K / 5.5$] {decision.reason}"
+            decision.reason = f"[MICRO-CAPITAL / {self.min_notional_target}$ / {self.leverage}X] {decision.reason}"
         return decision

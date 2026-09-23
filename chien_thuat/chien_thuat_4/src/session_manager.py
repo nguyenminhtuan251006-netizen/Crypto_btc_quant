@@ -31,9 +31,9 @@ class SessionProfileConfig:
 
 LIQUID_PROFILE = SessionProfileConfig(
     name="LIQUID",
-    trend_z_min=1.25,
-    range_z_min=1.35,
-    confidence_gap_min=0.20,
+    trend_z_min=1.50,               # Raised from 1.25 -> 1.50 for high-conviction entries
+    range_z_min=1.65,               # Raised from 1.35 -> 1.65
+    confidence_gap_min=0.30,        # Raised from 0.20 -> 0.30 (Top 1 must dominate)
     consensus_min=4,
     cost_multiple_min=2.5,
     max_spread_pct=0.0005,          # 0.05% — tight spread for high-liquidity session
@@ -44,9 +44,9 @@ LIQUID_PROFILE = SessionProfileConfig(
 
 ASIA_PROFILE = SessionProfileConfig(
     name="ASIA",
-    trend_z_min=1.40,
-    range_z_min=1.55,
-    confidence_gap_min=0.30,
+    trend_z_min=1.60,               # Raised from 1.40 -> 1.60 for extra safety in thin session
+    range_z_min=1.75,               # Raised from 1.55 -> 1.75
+    confidence_gap_min=0.35,        # Raised from 0.30 -> 0.35
     consensus_min=5,
     cost_multiple_min=3.0,
     max_spread_pct=0.0008,          # 0.08% — wider spread tolerance for thin Asian session

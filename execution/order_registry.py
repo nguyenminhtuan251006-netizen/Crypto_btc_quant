@@ -199,24 +199,12 @@ class OrderRegistry:
         has_binance_pos = len(active_pos) > 0
         has_registry_pos = self.is_locked()
 
-        # Case 1: Binance has position, Registry is empty → Adopt
+        # Case 1: Binance has position, Registry is empty
+        # This position was opened MANUALLY or via a Binance Voucher/Gift!
+        # Do NOT adopt it! Do NOT touch it!
         if has_binance_pos and not has_registry_pos:
-            pos = active_pos[0]
-            sym = pos.get("symbol", "UNKNOWN")
-            amt = float(pos.get("positionAmt", 0.0))
-            entry_p = float(pos.get("entryPrice", 0.0))
-            side = "BUY" if amt > 0 else "SELL"
-
-            self.register_new_trade(
-                owner="RECOVERY",
-                symbol=sym,
-                side=side,
-                qty=abs(amt),
-                entry_price=entry_p,
-                tp_price=0.0,
-                sl_price=0.0,
-            )
-            return f"⚠️ STARTUP RECOVERY: Phát hiện vị thế {side} {abs(amt)} {sym} trên Binance không có trong Registry. Đã adopt."
+            syms = [p.get("symbol", "N/A") for p in active_pos]
+            return f"ℹ️ STARTUP: Phát hiện {len(active_pos)} vị thế thủ công / Voucher ({', '.join(syms)}) trên Binance. Bot sẽ BỎ QUA và KHÔNG can thiệp."
 
         # Case 2: Registry says OPEN, Binance is flat → Mark closed
         if not has_binance_pos and has_registry_pos:
@@ -225,9 +213,16 @@ class OrderRegistry:
             self.mark_trade_closed(close_reason="Detected flat on startup reconciliation")
             return f"⚠️ STARTUP RECOVERY: Registry ghi {sym} OPEN nhưng Binance flat. Đã đánh dấu CLOSED."
 
-        # Both agree
+        # Case 3: Both agree
         if has_binance_pos and has_registry_pos:
-            return "✅ STARTUP: Registry và Binance đồng bộ (có vị thế đang mở)."
+            trade = self.get_active_trade()
+            bot_sym = trade.get("symbol") if trade else ""
+            bot_pos_match = [p for p in active_pos if p.get("symbol") == bot_sym]
+            if bot_pos_match:
+                return f"✅ STARTUP: Registry và Binance đồng bộ cho vị thế {bot_sym} của bot."
+            else:
+                self.mark_trade_closed(close_reason="Bot symbol not found in active positions")
+                return f"⚠️ STARTUP: Vị thế {bot_sym} của bot đã đóng trên Binance. Đã đồng bộ Registry."
 
         return "✅ STARTUP: Tài khoản flat, Registry trống. Sẵn sàng giao dịch."
 

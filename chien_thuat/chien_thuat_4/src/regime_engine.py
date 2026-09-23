@@ -12,15 +12,19 @@ from typing import Dict, Any, Tuple
 
 
 class MarketRegimeEngine:
-    """Classifies market conditions into TREND, RANGE, TRANSITION, or STRESS."""
+    """Classifies market conditions into TREND, RANGE, FLAT, TRANSITION, or STRESS."""
 
     def __init__(
         self,
         trend_efficiency_threshold: float = 0.20,  # Kaufman Efficiency Ratio threshold for trend
         max_spread_pct: float = 0.0008,            # 0.08%
+        flat_efficiency_threshold: float = 0.07,   # Below this = pure chop / zero net progress
+        flat_vol_threshold: float = 0.016,         # Compressed volatility threshold
     ):
         self.trend_efficiency_threshold = trend_efficiency_threshold
         self.max_spread_pct = max_spread_pct
+        self.flat_efficiency_threshold = flat_efficiency_threshold
+        self.flat_vol_threshold = flat_vol_threshold
 
     def evaluate_regime(
         self,
@@ -74,6 +78,14 @@ class MarketRegimeEngine:
         }
 
         # 3. Regime Classification (Section 10)
+
+        # FLAT detection — prolonged sideway with compressed volatility or pure chop
+        if (efficiency_ratio < self.flat_efficiency_threshold) or (efficiency_ratio < 0.10 and realized_vol < self.flat_vol_threshold):
+            return "FLAT", (
+                f"🚫 THỊ TRƯỜNG SIDEWAY KÉO DÀI (Hiệu suất: {efficiency_ratio:.3f}, "
+                f"Vol: {realized_vol:.4f}) — KHÓA MỌI LỆNH MỚI"
+            ), metrics
+
         # Strong directional market: High efficiency ratio + broad consensus
         if efficiency_ratio >= self.trend_efficiency_threshold and (market_breadth >= 0.55 or market_breadth <= 0.45):
             direction = "TĂNG (Bullish)" if ema12 >= ema26 else "GIẢM (Bearish)"
@@ -84,3 +96,4 @@ class MarketRegimeEngine:
 
         else:
             return "TRANSITION", f"Thị trường CHUYỂN PHA (Hiệu suất: {efficiency_ratio:.2f}, Breadth: {market_breadth*100:.0f}%)", metrics
+

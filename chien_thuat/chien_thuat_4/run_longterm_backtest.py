@@ -24,25 +24,27 @@ from chien_thuat.chien_thuat_4.run_backtest import compute_indicators
 
 
 def load_long_term_datasets(data_dir: str):
-    """Loads 50k-bar datasets for BTC, ETH, SOL + HFT features."""
-    btc_path = os.path.join(data_dir, "BTCUSDT_5m_50k.csv")
-    eth_path = os.path.join(data_dir, "ETHUSDT_5m_50k.csv")
-    sol_path = os.path.join(data_dir, "SOLUSDT_5m_50k.csv")
+    """Loads 50k-bar datasets for all available coins + HFT features."""
     hft_path = os.path.join(data_dir, "hft_features_5m.parquet")
+    if not os.path.exists(hft_path):
+        raise FileNotFoundError(f"Không tìm thấy HFT features: {hft_path}")
 
-    for p in [btc_path, eth_path, sol_path, hft_path]:
-        if not os.path.exists(p):
-            raise FileNotFoundError(f"Không tìm thấy file dữ liệu: {p}")
+    # Discover all *_5m_50k.csv files
+    all_files = sorted([f for f in os.listdir(data_dir) if f.endswith("_5m_50k.csv")])
+    if not all_files:
+        raise FileNotFoundError("Không tìm thấy file *_5m_50k.csv nào trong thư mục data/")
 
-    print("  • Đang nạp dữ liệu nến BTC, ETH, SOL (50k bars mỗi coin)...")
-    df_btc = pd.read_csv(btc_path)
-    df_eth = pd.read_csv(eth_path)
-    df_sol = pd.read_csv(sol_path)
-
-    for df in [df_btc, df_eth, df_sol]:
+    print(f"  • Phát hiện {len(all_files)} bộ dữ liệu nến 5M (50k bars mỗi coin)...")
+    datasets = {}
+    for fname in all_files:
+        sym = fname.replace("_5m_50k.csv", "")
+        fpath = os.path.join(data_dir, fname)
+        df = pd.read_csv(fpath)
         df["datetime"] = pd.to_datetime(df["datetime"])
         df.sort_values("datetime", inplace=True)
         df.drop_duplicates("datetime", inplace=True)
+        datasets[sym] = df
+        print(f"    → {sym}: {len(df):,} nến")
 
     print("  • Đang nạp 11 đặc trưng vi cấu trúc HFT (Orderbook L2 + Trades CVD)...")
     df_hft = pd.read_parquet(hft_path)
@@ -50,34 +52,40 @@ def load_long_term_datasets(data_dir: str):
     df_hft.sort_values("datetime", inplace=True)
     df_hft.drop_duplicates("datetime", inplace=True)
 
-    # Find common date range
-    start_dt = max(df_btc["datetime"].min(), df_eth["datetime"].min(),
-                   df_sol["datetime"].min(), df_hft["datetime"].min())
-    end_dt = min(df_btc["datetime"].max(), df_eth["datetime"].max(),
-                 df_sol["datetime"].max(), df_hft["datetime"].max())
+    # Find common date range across ALL datasets + HFT
+    start_dt = max(df["datetime"].min() for df in datasets.values())
+    start_dt = max(start_dt, df_hft["datetime"].min())
+    end_dt = min(df["datetime"].max() for df in datasets.values())
+    end_dt = min(end_dt, df_hft["datetime"].max())
 
     print(f"  • Khung thời gian đồng bộ chung: {start_dt} → {end_dt}")
 
-    df_btc = df_btc[(df_btc["datetime"] >= start_dt) & (df_btc["datetime"] <= end_dt)].reset_index(drop=True)
-    df_eth = df_eth[(df_eth["datetime"] >= start_dt) & (df_eth["datetime"] <= end_dt)].reset_index(drop=True)
-    df_sol = df_sol[(df_sol["datetime"] >= start_dt) & (df_sol["datetime"] <= end_dt)].reset_index(drop=True)
+    for sym in list(datasets.keys()):
+        df = datasets[sym]
+        df = df[(df["datetime"] >= start_dt) & (df["datetime"] <= end_dt)].reset_index(drop=True)
+        datasets[sym] = df
+
     df_hft = df_hft[(df_hft["datetime"] >= start_dt) & (df_hft["datetime"] <= end_dt)].reset_index(drop=True)
 
-    # Merge HFT features into BTC
-    df_btc = pd.merge(df_btc, df_hft, on="datetime", how="left").ffill().fillna(0)
+    # Merge HFT features into BTCUSDT
+    if "BTCUSDT" in datasets:
+        datasets["BTCUSDT"] = pd.merge(datasets["BTCUSDT"], df_hft, on="datetime", how="left").ffill().fillna(0)
 
     total_days = (end_dt - start_dt).days
-    print(f"  • Tổng số thanh nến 5M: BTC={len(df_btc):,} | ETH={len(df_eth):,} | SOL={len(df_sol):,}")
-    print(f"  • Tổng thời gian kiểm thử: {total_days} ngày (~{total_days/30:.1f} tháng)")
-    return {"BTCUSDT": df_btc, "ETHUSDT": df_eth, "SOLUSDT": df_sol}
+    symbols = sorted(datasets.keys())
+    min_len = min(len(datasets[s]) for s in symbols)
+    print(f"  • Tổng coins: {len(symbols)} | Nến/coin: {min_len:,} | Thời gian: {total_days} ngày (~{total_days/30:.1f} tháng)")
+    return datasets
 
 
 def run_simulation(datasets, symbols, start_idx, end_idx, initial_capital=5000.0,
-                   leverage=5, risk_pct=0.005, period_name="PERIOD"):
-    """Runs AFCX simulation on a specific bar range."""
+                   leverage=5, risk_pct=0.002, min_abs_score=1.70, min_score_gap=0.40,
+                   sl_atr_mult=2.2, min_sl_pct=0.012, tp_mult=2.2, max_hold_bars=72,
+                   cooldown_bars=6, period_name="PERIOD"):
+    """Runs AFCX simulation on a specific bar range with tightened gates & realistic SL/TP."""
     ranker = CrossSectionalRanker(
-        min_abs_score=1.25,
-        min_score_gap=0.20,
+        min_abs_score=min_abs_score,
+        min_score_gap=min_score_gap,
         min_consensus=4,
         cost_ratio_threshold=3.0,
     )
@@ -87,6 +95,7 @@ def run_simulation(datasets, symbols, start_idx, end_idx, initial_capital=5000.0
     active_trade = None
     trades_history = []
     equity_curve = [capital]
+    last_exit_bar = -999
 
     maker_fee = 0.0002
     taker_fee = 0.0005
@@ -128,7 +137,7 @@ def run_simulation(datasets, symbols, start_idx, end_idx, initial_capital=5000.0
                 elif low_price <= active_trade["tp"]:
                     closed, exit_price, exit_reason = True, active_trade["tp"], "TAKE_PROFIT"
 
-            if not closed and (idx - active_trade["entry_bar"]) >= 36:
+            if not closed and (idx - active_trade["entry_bar"]) >= max_hold_bars:
                 closed, exit_price, exit_reason = True, cur_price, "TIME_EXPIRE"
 
             if closed:
@@ -150,6 +159,7 @@ def run_simulation(datasets, symbols, start_idx, end_idx, initial_capital=5000.0
                 active_trade["capital_after"] = capital
                 trades_history.append(active_trade)
                 active_trade = None
+                last_exit_bar = idx
 
         equity_curve.append(capital)
 
@@ -157,15 +167,22 @@ def run_simulation(datasets, symbols, start_idx, end_idx, initial_capital=5000.0
             continue
         if idx % 3 != 0 or not is_active_session:
             continue
+        if idx - last_exit_bar < cooldown_bars:
+            continue
 
         # Regime filter
         btc_sub = datasets["BTCUSDT"].iloc[max(0, idx - 240):idx + 1]
         btc_1h = btc_sub.iloc[::12].copy()
+        
+        # Market breadth across universe
+        pos_m = sum(1 for s in symbols if idx < len(datasets[s]) and datasets[s].iloc[idx].get("m_1h", 0) > 0)
+        breadth = pos_m / max(len(symbols), 1)
+
         if len(btc_1h) >= 20:
-            regime, _, _ = regime_engine.evaluate_regime(btc_1h)
+            regime, _, _ = regime_engine.evaluate_regime(btc_1h, market_breadth=breadth)
         else:
             regime = "TREND"
-        if regime == "STRESS":
+        if regime in ("STRESS", "FLAT"):
             continue
 
         # Rank candidates
@@ -204,14 +221,14 @@ def run_simulation(datasets, symbols, start_idx, end_idx, initial_capital=5000.0
             atr = float(datasets[target_sym].iloc[idx]["atr"])
 
             risk_usd = capital * risk_pct
-            sl_dist = max(atr * 1.2, entry_p * 0.005)
+            sl_dist = max(atr * sl_atr_mult, entry_p * min_sl_pct)
             notional = min((risk_usd / (sl_dist / entry_p)), capital * leverage * 0.4)
 
             if direction == 1:
-                tp_p = entry_p + 1.8 * sl_dist
+                tp_p = entry_p + tp_mult * sl_dist
                 sl_p = entry_p - sl_dist
             else:
-                tp_p = entry_p - 1.8 * sl_dist
+                tp_p = entry_p - tp_mult * sl_dist
                 sl_p = entry_p + sl_dist
 
             active_trade = {
@@ -286,8 +303,8 @@ def main():
     data_dir = os.path.join(workspace_dir, "data")
     datasets = load_long_term_datasets(data_dir)
 
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-    print("\n[1/3] Chuẩn bị đặc trưng dòng tiền & Vi cấu trúc cho từng cặp tài sản...")
+    symbols = sorted(datasets.keys())
+    print(f"\n[1/3] Chuẩn bị đặc trưng dòng tiền & Vi cấu trúc cho toàn bộ {len(symbols)} cặp tài sản...")
     for sym in symbols:
         datasets[sym] = compute_indicators(datasets[sym], sym)
         print(f"  • {sym:<10}: {len(datasets[sym]):,} nến | Đã tính Momentum, OFI, Book Imbalance, ATR")

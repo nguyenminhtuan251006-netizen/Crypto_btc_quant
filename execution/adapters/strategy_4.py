@@ -29,7 +29,18 @@ class Strategy4Adapter(BaseStrategy):
             stop_loss_pct=0.006,
         )
         self.afcx = AFCXStrategy(name="chien_thuat_4", leverage=self.leverage)
+        # Override risk: reduce from 0.5% to 0.2% per trade while validating long-term performance
+        self.afcx.risk_pct = 0.002
         self.session_mgr = self.afcx.session_mgr
+
+        # Trailing Parameters (Bậc Thang 2 Tầng)
+        self.enable_trailing = self.afcx.enable_trailing
+        self.tier1_trigger_pct = getattr(self.afcx, 'tier1_trigger_pct', None)
+        self.tier1_lock_pct = getattr(self.afcx, 'tier1_lock_pct', None)
+        self.tier2_trigger_pct = getattr(self.afcx, 'tier2_trigger_pct', None)
+        self.trailing_callback_pct = self.afcx.trailing_callback_pct
+        self.profit_lock_floor_pct = self.afcx.profit_lock_floor_pct
+        self.wide_tp_pct = self.afcx.wide_tp_pct
 
     def initialize(self):
         """Initialize AFCX universe and cache metadata."""

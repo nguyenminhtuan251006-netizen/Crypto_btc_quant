@@ -126,7 +126,7 @@ class OrderReconciler:
             "side": close_side,
             "type": "LIMIT",
             "timeInForce": "GTC",
-            "price": round(tp_price, 1),
+            "price": float(tp_price),
             "quantity": qty,
             "reduceOnly": "true",
         }
@@ -134,6 +134,8 @@ class OrderReconciler:
             tp_params["newClientOrderId"] = client_order_ids["tp_cid"]
 
         res_tp = self.client.post("/fapi/v1/order", tp_params)
+        if isinstance(res_tp, dict) and "code" in res_tp and res_tp["code"] != 200:
+            print(f"[RECONCILER ERROR] Lỗi đặt TP {self.symbol} @ {tp_price}: {res_tp.get('msg')} (code: {res_tp.get('code')})")
 
         # 2. Stop Loss: Conditional Stop Market Order triggered by Mark Price
         sl_params = {
@@ -141,7 +143,7 @@ class OrderReconciler:
             "symbol": self.symbol,
             "side": close_side,
             "type": "STOP_MARKET",
-            "triggerPrice": round(sl_price, 1),
+            "triggerPrice": float(sl_price),
             "workingType": "MARK_PRICE",  # Mark price trigger prevents wick manipulation
             "quantity": qty,
             "reduceOnly": "true",
@@ -151,8 +153,81 @@ class OrderReconciler:
 
         time.sleep(0.3)
         res_sl = self.client.post("/fapi/v1/algoOrder", sl_params)
+        if isinstance(res_sl, dict) and "code" in res_sl and res_sl["code"] != 200:
+            print(f"[RECONCILER ERROR] Lỗi đặt SL {self.symbol} @ {sl_price}: {res_sl.get('msg')} (code: {res_sl.get('code')})")
 
         return res_tp, res_sl
+
+    def update_stop_loss(self, position_side: int, qty: float, sl_price: float, sl_cid: Optional[str] = None):
+        """Cancels any existing conditional algo orders and places an updated Stop Loss."""
+        close_side = "SELL" if position_side == 1 else "BUY"
+        try:
+            algos = self.client.get("/fapi/v1/openAlgoOrders", {"symbol": self.symbol})
+            if isinstance(algos, list):
+                for a in algos:
+                    aid = a.get("algoId")
+                    if aid:
+                        self.client.delete("/fapi/v1/algoOrder", {"symbol": self.symbol, "algoId": aid})
+        except Exception:
+            pass
+
+        sl_params = {
+            "algoType": "CONDITIONAL",
+            "symbol": self.symbol,
+            "side": close_side,
+            "type": "STOP_MARKET",
+            "triggerPrice": float(sl_price),
+            "workingType": "MARK_PRICE",
+            "quantity": qty,
+            "reduceOnly": "true",
+        }
+        if sl_cid:
+            sl_params["clientAlgoId"] = sl_cid
+
+        time.sleep(0.2)
+        res_sl = self.client.post("/fapi/v1/algoOrder", sl_params)
+        return res_sl
+
+    def cancel_take_profit(self, active_trade: Optional[Dict[str, Any]] = None) -> int:
+        """Cancels open TP order to allow trailing stop to let profits run."""
+        cancelled = 0
+        tp_id = active_trade.get("tp_order_id") if active_trade else None
+        if tp_id:
+            try:
+                res = self.client.delete("/fapi/v1/order", {"symbol": self.symbol, "orderId": tp_id})
+                if isinstance(res, dict) and "orderId" in res:
+                    cancelled += 1
+            except Exception:
+                pass
+
+        # Also sweep any lingering limit orders for this symbol to ensure clean slate for wide TP
+        try:
+            orders = self.client.get("/fapi/v1/openOrders", {"symbol": self.symbol})
+            if isinstance(orders, list):
+                for o in orders:
+                    oid = o.get("orderId")
+                    if oid and oid != tp_id:
+                        self.client.delete("/fapi/v1/order", {"symbol": self.symbol, "orderId": oid})
+                        cancelled += 1
+        except Exception:
+            pass
+        return cancelled
+
+    def place_take_profit_order(self, position_side: int, qty: float, tp_price: float, tp_cid: Optional[str] = None):
+        """Places a single reduce-only limit TP order."""
+        close_side = "SELL" if position_side == 1 else "BUY"
+        tp_params = {
+            "symbol": self.symbol,
+            "side": close_side,
+            "type": "LIMIT",
+            "timeInForce": "GTC",
+            "price": float(tp_price),
+            "quantity": qty,
+            "reduceOnly": "true",
+        }
+        if tp_cid:
+            tp_params["newClientOrderId"] = tp_cid
+        return self.client.post("/fapi/v1/order", tp_params)
 
     # --------------------------------------------------------------------------
     # Emergency Flatten (Global Kill Switch only — Spec Section 15 GLOBAL_KILL)

@@ -13,11 +13,14 @@ __pycache__/
 *$py.class
 .pytest_cache/
 
-# Large dataset files
+# Large dataset files & Backtest data (Do not commit to GitHub)
 *.parquet
 data/*.parquet
 data_remote/
 2026-09-11.parquet
+data/*.csv
+data/1year/
+reports/*.csv
 
 # Machine learning models (large binary weights)
 models/*.joblib

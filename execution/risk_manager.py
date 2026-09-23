@@ -31,6 +31,7 @@ class RiskManager:
         max_daily_loss_pct: float = 0.02,   # Kill switch after 2% loss in a single day
         max_spread_pct: float = 0.0005,     # 0.05% max spread allowed for entry (default, can override per-session)
         max_account_drawdown_pct: float = 0.06,  # Hard stop at 6% total account drawdown (v3)
+        max_trades_per_day: int = 8,        # Max trades per day to prevent fee accumulation
         atr_multiplier_sl: float = 1.2,     # k * ATR for Stop Loss (baseline 1.2)
         r_multiple_tp: float = 1.5,         # Take profit = 1.5 * Stop distance
         min_sl_pct: float = 0.003,          # Minimum 0.3% stop distance
@@ -44,6 +45,7 @@ class RiskManager:
         self.max_daily_loss_pct = max_daily_loss_pct
         self.max_spread_pct = max_spread_pct
         self.max_account_drawdown_pct = max_account_drawdown_pct
+        self.max_trades_per_day = max_trades_per_day
         self.atr_multiplier_sl = atr_multiplier_sl
         self.r_multiple_tp = r_multiple_tp
         self.min_sl_pct = min_sl_pct
@@ -60,6 +62,7 @@ class RiskManager:
         self.state = {
             "consecutive_losses": 0,
             "daily_loss_amount": 0.0,
+            "daily_trade_count": 0,       # Track number of trades opened today
             "day_start_equity": 0.0,
             "account_peak_equity": 0.0,   # Track peak equity for drawdown check (v3)
             "current_date": str(date.today()),
@@ -81,6 +84,7 @@ class RiskManager:
                     if saved.get("current_date") != today_str:
                         saved["current_date"] = today_str
                         saved["daily_loss_amount"] = 0.0
+                        saved["daily_trade_count"] = 0
                         saved["consecutive_losses"] = 0
                         saved["day_start_equity"] = 0.0
                         saved["is_tripped"] = False
@@ -260,16 +264,27 @@ class RiskManager:
                 self._save_state()
                 return False, f"🚨 KILL SWITCH KÍCH HOẠT: {self.state['trip_reason']}"
 
-        # 5. Spread Spike Filter (supports per-session override)
+        # 5. Daily Trade Count Cap (prevent fee accumulation from overtrading)
+        daily_trades = self.state.get("daily_trade_count", 0)
+        if daily_trades >= self.max_trades_per_day:
+            return False, f"⚠️ ĐẠT GIỚI HẠN LỆNH/NGÀY: {daily_trades}/{self.max_trades_per_day} (Dừng mở lệnh mới để kiểm soát phí)"
+
+        # 6. Spread Spike Filter (supports per-session override)
         effective_spread_limit = session_max_spread_pct if session_max_spread_pct is not None else self.max_spread_pct
         if current_spread_pct > effective_spread_limit:
             return False, f"⚠️ SPREAD QUÁ RỘNG: {current_spread_pct*100:.3f}% > {effective_spread_limit*100:.3f}% (Bảo vệ trượt giá)"
 
-        # 6. Data Freshness Filter
+        # 7. Data Freshness Filter
         if data_freshness_seconds > 60.0:
             return False, f"⚠️ DỮ LIỆU BỊ TRỄ: {data_freshness_seconds:.1f}s > 60s (Dừng vào lệnh chờ kết nối ổn định)"
 
         return True, "OK"
+
+    def record_trade_opened(self):
+        """Increment daily trade counter when a new trade is opened."""
+        self._load_state()
+        self.state["daily_trade_count"] = self.state.get("daily_trade_count", 0) + 1
+        self._save_state()
 
     def record_trade_outcome(self, net_pnl_usdt: float, current_equity: float):
         """Record trade result to update loss counters and daily drawdown."""
@@ -288,6 +303,7 @@ class RiskManager:
         """Manually reset the kill switch."""
         self.state["consecutive_losses"] = 0
         self.state["daily_loss_amount"] = 0.0
+        self.state["daily_trade_count"] = 0
         self.state["is_tripped"] = False
         self.state["trip_reason"] = ""
         self.state["current_date"] = str(date.today())

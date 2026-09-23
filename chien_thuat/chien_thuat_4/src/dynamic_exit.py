@@ -18,11 +18,24 @@ class DynamicExitManager:
         self,
         min_holding_score: float = 0.40,
         trailing_activation_r: float = 1.0,
+        trailing_activation_pct: Optional[float] = None,
+        trailing_callback_pct: Optional[float] = None,
+        profit_lock_floor_pct: float = 0.0010,
+        tier1_trigger_pct: Optional[float] = None,
+        tier1_lock_pct: Optional[float] = None,
+        tier2_trigger_pct: Optional[float] = None,
         max_duration_seconds: float = 3 * 3600,  # 3 hours
     ):
         self.min_holding_score = min_holding_score
         self.trailing_activation_r = trailing_activation_r
+        self.trailing_activation_pct = trailing_activation_pct
+        self.trailing_callback_pct = trailing_callback_pct
+        self.profit_lock_floor_pct = profit_lock_floor_pct
+        self.tier1_trigger_pct = tier1_trigger_pct
+        self.tier1_lock_pct = tier1_lock_pct
+        self.tier2_trigger_pct = tier2_trigger_pct
         self.max_duration_seconds = max_duration_seconds
+        self.last_active_tier = 0  # 0: Inactive, 1: Tier 1 (Protected Lock), 2: Tier 2 (Dynamic Runner)
 
     def check_dynamic_exit(
         self,
@@ -79,21 +92,88 @@ class DynamicExitManager:
         current_lowest_price: float,
     ) -> Optional[float]:
         """
-        Returns new trailing stop price if +1R is reached (Section 23).
+        Returns new trailing stop price if activation threshold is reached.
+        Supports Two-Tier Profit Ratchet (Anti-Wick Lock + Dynamic Peak Runner),
+        as well as classical adaptive trailing stop.
         """
         if position_direction == 1:
             profit_pct = (current_price - entry_price) / entry_price
-            if profit_pct >= self.trailing_activation_r * sl_distance_pct:
-                # Trail by 1.2 * ATR_5m from the highest price reached
-                trail_distance = max(1.2 * atr_5m_pct * current_highest_price, sl_distance_pct * 0.5 * current_highest_price)
+            peak_profit_pct = (current_highest_price - entry_price) / entry_price
+
+            # 1. Two-Tier Profit Ratchet (Chống quét râu)
+            if self.tier1_trigger_pct is not None and self.tier1_lock_pct is not None:
+                if self.tier2_trigger_pct is not None and peak_profit_pct >= self.tier2_trigger_pct:
+                    self.last_active_tier = 2  # Tầng 2: Bùng nổ bám đỉnh
+                    trail_dist_pct = (
+                        self.trailing_callback_pct
+                        if self.trailing_callback_pct is not None
+                        else max(1.2 * atr_5m_pct, sl_distance_pct * 0.5)
+                    )
+                    trail_distance = trail_dist_pct * current_highest_price
+                    new_sl = current_highest_price - trail_distance
+                    min_floor = entry_price * (1.0 + self.tier1_lock_pct)
+                    return max(new_sl, min_floor)
+                elif peak_profit_pct >= self.tier1_trigger_pct:
+                    self.last_active_tier = 1  # Tầng 1: Khóa bảo hộ râu nến
+                    return entry_price * (1.0 + self.tier1_lock_pct)
+                return None
+
+            # Fallback: Classical single-tier trailing
+            is_triggered = (
+                profit_pct >= self.trailing_activation_pct
+                if self.trailing_activation_pct is not None
+                else profit_pct >= self.trailing_activation_r * sl_distance_pct
+            )
+            if is_triggered:
+                self.last_active_tier = 1
+                trail_dist_pct = (
+                    self.trailing_callback_pct
+                    if self.trailing_callback_pct is not None
+                    else max(1.2 * atr_5m_pct, sl_distance_pct * 0.5)
+                )
+                trail_distance = trail_dist_pct * current_highest_price
                 new_sl = current_highest_price - trail_distance
-                # Trailing stop must be at least breakeven
-                return max(new_sl, entry_price * 1.0005)
+                lock_price = entry_price * (1.0 + self.profit_lock_floor_pct)
+                return max(new_sl, lock_price)
+
         else:
             profit_pct = (entry_price - current_price) / entry_price
-            if profit_pct >= self.trailing_activation_r * sl_distance_pct:
-                trail_distance = max(1.2 * atr_5m_pct * current_lowest_price, sl_distance_pct * 0.5 * current_lowest_price)
+            peak_profit_pct = (entry_price - current_lowest_price) / entry_price
+
+            # 1. Two-Tier Profit Ratchet for Short
+            if self.tier1_trigger_pct is not None and self.tier1_lock_pct is not None:
+                if self.tier2_trigger_pct is not None and peak_profit_pct >= self.tier2_trigger_pct:
+                    self.last_active_tier = 2  # Tầng 2: Bùng nổ bám đáy
+                    trail_dist_pct = (
+                        self.trailing_callback_pct
+                        if self.trailing_callback_pct is not None
+                        else max(1.2 * atr_5m_pct, sl_distance_pct * 0.5)
+                    )
+                    trail_distance = trail_dist_pct * current_lowest_price
+                    new_sl = current_lowest_price + trail_distance
+                    max_floor = entry_price * (1.0 - self.tier1_lock_pct)
+                    return min(new_sl, max_floor)
+                elif peak_profit_pct >= self.tier1_trigger_pct:
+                    self.last_active_tier = 1  # Tầng 1: Khóa bảo hộ râu nến cho Short
+                    return entry_price * (1.0 - self.tier1_lock_pct)
+                return None
+
+            # Fallback: Classical single-tier trailing for Short
+            is_triggered = (
+                profit_pct >= self.trailing_activation_pct
+                if self.trailing_activation_pct is not None
+                else profit_pct >= self.trailing_activation_r * sl_distance_pct
+            )
+            if is_triggered:
+                self.last_active_tier = 1
+                trail_dist_pct = (
+                    self.trailing_callback_pct
+                    if self.trailing_callback_pct is not None
+                    else max(1.2 * atr_5m_pct, sl_distance_pct * 0.5)
+                )
+                trail_distance = trail_dist_pct * current_lowest_price
                 new_sl = current_lowest_price + trail_distance
-                return min(new_sl, entry_price * 0.9995)
+                lock_price = entry_price * (1.0 - self.profit_lock_floor_pct)
+                return min(new_sl, lock_price)
 
         return None

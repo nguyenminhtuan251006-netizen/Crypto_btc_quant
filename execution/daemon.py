@@ -49,19 +49,20 @@ signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
 
 
-def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
+def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25, mode: str = None):
     global running
+    resolved_mode = (mode or os.getenv("BINANCE_MODE", "demo")).lower()
     print("=" * 95)
     print("      🛡️ UNIVERSAL 24/7 QUANT TRADING DAEMON — SAFETY & RISK ENFORCED")
-    print(f"      Chiến thuật hoạt động: {strategy_name.upper()}")
+    print(f"      Chiến thuật hoạt động: {strategy_name.upper()} | Môi trường: {resolved_mode.upper()}")
     print("      Tiêu chuẩn: Institutional Risk & Safety Specification (Binance Futures)")
     print("      Cơ chế: Chạy ngầm độc lập trên Linux Server (Tắt máy tính cá nhân vẫn chạy 24/7)")
     print("=" * 95)
 
     # 1. Credentials
-    api_key, api_secret = load_credentials()
+    api_key, api_secret = load_credentials(mode=resolved_mode)
     if not api_key or not api_secret:
-        print("[LỖI] Không tìm thấy API Key trong file .env!")
+        print(f"[LỖI] Không tìm thấy API Key cho chế độ '{resolved_mode}' trong file .env!")
         return
 
     # 2. Strategy instantiation
@@ -72,15 +73,17 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
         return
 
     # 3. Binance Client, Risk Manager, and Universe Manager
-    client = BinanceDemoClient(api_key, api_secret)
-    client.init_account_settings(strategy.symbol, leverage=strategy.leverage)
-    risk_mgr = RiskManager(max_leverage=strategy.leverage)
+    base_url = "https://fapi.binance.com" if resolved_mode == "live" else "https://demo-fapi.binance.com"
+    client = BinanceDemoClient(api_key, api_secret, base_url=base_url)
+    risk_state_file = os.path.join(workspace_dir, "logs", f"kill_switch_{strategy.name}_{resolved_mode}.json")
+    registry_file = os.path.join(workspace_dir, "logs", f"trade_registry_{strategy.name}_{resolved_mode}.json")
+    risk_mgr = RiskManager(max_leverage=strategy.leverage, state_file=risk_state_file)
     universe_mgr = UniverseManager()
-    order_registry = OrderRegistry()
+    order_registry = OrderRegistry(registry_file=registry_file)
 
     log_dir = os.path.join(workspace_dir, "logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"live_{strategy.name}.log")
+    log_file = os.path.join(log_dir, f"live_{strategy.name}_{resolved_mode}.log")
 
     # Initial equity fetch
     acc_info = client.get("/fapi/v2/account")
@@ -92,26 +95,61 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
     print(f"[Khởi tạo thành công] Chiến thuật: {strategy.name} | Đòn bẩy tối đa: {strategy.leverage}x")
     print(f"[Vốn tài khoản hiện tại]: ${equity:,.2f} USDT")
     print(f"[Cơ chế quản trị rủi ro]: Risk {risk_mgr.risk_fraction*100:.1f}% vốn/lệnh | Dynamic ATR Stops")
-    print(f"[Kill Switch Circuit Breaker]: Max {risk_mgr.max_consecutive_losses} lệnh thua | Max {risk_mgr.max_daily_loss_pct*100:.1f}% lỗ/ngày | Max Drawdown {risk_mgr.max_account_drawdown_pct*100:.1f}%")
+    print(f"[Kill Switch Circuit Breaker]: Max {risk_mgr.max_consecutive_losses} lệnh thua | Max {risk_mgr.max_daily_loss_pct*100:.1f}% lỗ/ngày | Max Drawdown {risk_mgr.max_account_drawdown_pct*100:.1f}% | Max {risk_mgr.max_trades_per_day} lệnh/ngày")
     print(f"[Bảo hiểm Binance]: Hard TP/SL ghim trên sàn, Reduce-Only, Mark Price Trigger, Targeted Reconcile")
     print(f"[Order Registry]: {startup_sync_msg}")
     print(f"[Nhật ký realtime]: {log_file}")
     print(f"[Trạng thái]: Bắt đầu vòng lặp giám sát thị trường 24/7...")
 
+    # Write startup banner to log file (stdout is redirected to /dev/null by quant_bot.sh)
+    startup_banner = (
+        f"\n{'='*95}\n"
+        f"      🛡️ UNIVERSAL 24/7 QUANT TRADING DAEMON — SAFETY & RISK ENFORCED\n"
+        f"      Chiến thuật hoạt động: {strategy_name.upper()} | Môi trường: {resolved_mode.upper()}\n"
+        f"      Khởi tạo: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"      Vốn: ${equity:,.2f} USDT | Đòn bẩy: {strategy.leverage}x | Risk: {risk_mgr.risk_fraction*100:.1f}%/lệnh\n"
+        f"      Kill Switch: {risk_mgr.max_consecutive_losses} thua liên tiếp | {risk_mgr.max_daily_loss_pct*100:.1f}% lỗ/ngày | {risk_mgr.max_account_drawdown_pct*100:.1f}% drawdown | {risk_mgr.max_trades_per_day} lệnh/ngày\n"
+        f"{'='*95}"
+    )
+    with open(log_file, "a") as f: f.write(startup_banner + "\n")
+
     prev_amt = 0.0
     prev_equity = equity
     active_symbol = strategy.symbol
     entry_timestamp = time.time()
-    exit_manager = DynamicExitManager()
+    all_pos = []  # Fix #2: Initialize to prevent NameError in Step E when no active_trade exists
+    consecutive_errors = 0  # Fix #1: Track consecutive API errors for exponential backoff
+    
+    # Trailing Take Profit Configuration from Strategy (Two-Tier Ratchet)
+    enable_trailing = getattr(strategy, 'enable_trailing', True)
+    trailing_activation_pct = getattr(strategy, 'trailing_activation_pct', None)
+    trailing_callback_pct = getattr(strategy, 'trailing_callback_pct', None)
+    profit_lock_floor_pct = getattr(strategy, 'profit_lock_floor_pct', 0.0010)
+    wide_tp_pct = getattr(strategy, 'wide_tp_pct', 0.10)
+    tier1_trigger_pct = getattr(strategy, 'tier1_trigger_pct', None)
+    tier1_lock_pct = getattr(strategy, 'tier1_lock_pct', None)
+    tier2_trigger_pct = getattr(strategy, 'tier2_trigger_pct', None)
+
+    exit_manager = DynamicExitManager(
+        trailing_activation_pct=trailing_activation_pct,
+        trailing_callback_pct=trailing_callback_pct,
+        profit_lock_floor_pct=profit_lock_floor_pct,
+        tier1_trigger_pct=tier1_trigger_pct,
+        tier1_lock_pct=tier1_lock_pct,
+        tier2_trigger_pct=tier2_trigger_pct,
+    )
+    trailing_active = False
     highest_price_seen = 0.0
     lowest_price_seen = float('inf')
 
-    # Initial check of open position across all symbols
-    all_pos = client.get("/fapi/v2/positionRisk")
-    active_pos = [p for p in all_pos if abs(float(p.get("positionAmt", 0.0))) > 1e-5] if isinstance(all_pos, list) else []
-    if active_pos:
-        active_symbol = active_pos[0].get("symbol", strategy.symbol)
-        prev_amt = float(active_pos[0].get("positionAmt", 0.0))
+    # Initial check of open position for bot's registered trade ONLY
+    active_trade = order_registry.get_active_trade()
+    if active_trade:
+        active_symbol = active_trade.get("symbol", strategy.symbol)
+        all_pos = client.get("/fapi/v2/positionRisk")
+        matched = [p for p in all_pos if p.get("symbol") == active_symbol and abs(float(p.get("positionAmt", 0.0))) > 1e-5] if isinstance(all_pos, list) else []
+        if matched:
+            prev_amt = float(matched[0].get("positionAmt", 0.0))
 
     iteration = 0
     while running:
@@ -146,40 +184,61 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
             if isinstance(acc_info, dict) and "totalMarginBalance" in acc_info:
                 equity = float(acc_info["totalMarginBalance"])
 
-            # Query all active positions (supports multi-asset strategy)
+            # Query positions, but manage ONLY bot-registered active trade
             all_pos = client.get("/fapi/v2/positionRisk")
-            active_pos = [p for p in all_pos if abs(float(p.get("positionAmt", 0.0))) > 1e-5] if isinstance(all_pos, list) else []
-
-            if active_pos:
-                active_symbol = active_pos[0].get("symbol", strategy.symbol)
-                amt = float(active_pos[0].get("positionAmt", 0.0))
-                entry = float(active_pos[0].get("entryPrice", 0.0))
-                unPnl = float(active_pos[0].get("unRealizedProfit", 0.0))
+            active_trade = order_registry.get_active_trade()
+            if active_trade:
+                active_symbol = active_trade.get("symbol", strategy.symbol)
+                matched = [p for p in all_pos if p.get("symbol") == active_symbol and abs(float(p.get("positionAmt", 0.0))) > 1e-5] if isinstance(all_pos, list) else []
+                if matched:
+                    amt = float(matched[0].get("positionAmt", 0.0))
+                    entry = float(matched[0].get("entryPrice", 0.0))
+                    unPnl = float(matched[0].get("unRealizedProfit", 0.0))
+                else:
+                    amt = 0.0
+                    entry = 0.0
+                    unPnl = 0.0
             else:
+                # Bot does NOT own any active trade.
+                # Any positions on Binance belong to manual trades or vouchers — DO NOT TOUCH!
                 amt = 0.0
                 entry = 0.0
                 unPnl = 0.0
+                active_symbol = strategy.symbol
 
             reconciler = OrderReconciler(client, symbol=active_symbol)
 
-            # Step B: Position Reconciliation & Trade Settlement
-            if abs(prev_amt) > 1e-5 and abs(amt) <= 1e-5:
-                # Previous position has just been closed by TP or SL!
+            # Step B: Position Reconciliation & Trade Settlement (Only for bot's registered trade)
+            if abs(prev_amt) > 1e-5 and abs(amt) <= 1e-5 and active_trade:
+                # Previous bot position has just been closed by TP or SL!
+                # Query realized PnL directly from Binance API to avoid distortion from manual trades / vouchers
                 trade_pnl = equity - prev_equity
+                try:
+                    income_res = client.get("/fapi/v1/income", {
+                        "symbol": active_symbol,
+                        "incomeType": "REALIZED_PNL",
+                        "limit": 5
+                    })
+                    if isinstance(income_res, list) and len(income_res) > 0:
+                        cutoff_ms = int((time.time() - 300) * 1000)
+                        recent_pnl = sum(
+                            float(item["income"]) for item in income_res
+                            if int(item.get("time", 0)) >= cutoff_ms
+                        )
+                        if abs(recent_pnl) > 1e-6:
+                            trade_pnl = recent_pnl
+                except Exception:
+                    pass
+
                 risk_mgr.record_trade_outcome(trade_pnl, equity)
 
                 # v3 Normal Reconcile: Cancel by registered order IDs (Spec Section 12 & 13)
-                active_trade = order_registry.get_active_trade()
                 orphans_cancelled = reconciler.reconcile_trade_closure(active_trade)
                 order_registry.mark_trade_closed(
                     exit_price=0.0,
                     net_pnl=trade_pnl,
                     close_reason="TP/SL Hit on Binance",
                 )
-
-                # Fallback sweep if entire account is flat (Review Issue 2)
-                if len(active_pos) == 0:
-                    reconciler.reconcile_and_cleanup_orphans(0.0)
 
                 close_banner = (
                     f"\n{'='*75}\n"
@@ -201,6 +260,7 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
                 # Reset tracking
                 highest_price_seen = 0.0
                 lowest_price_seen = float('inf')
+                trailing_active = False
 
             # Step C: Active Position Management
             if abs(amt) > 1e-5:
@@ -240,15 +300,15 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
                             close_side = "SELL" if pos_dir == 1 else "BUY"
                             close_res = client.place_market_order(active_symbol, close_side, abs(amt))
                             time.sleep(0.3)
-                            active_trade = order_registry.get_active_trade()
-                            orphans_cancelled = reconciler.reconcile_trade_closure(active_trade)
-                            order_registry.mark_trade_closed(
-                                exit_price=cur_market_price,
-                                net_pnl=unPnl,
-                                close_reason=f"Dynamic Exit: {exit_reason}",
-                            )
-                            if len(active_pos) == 0:
-                                reconciler.reconcile_and_cleanup_orphans(0.0)
+                            if active_trade:
+                                orphans_cancelled = reconciler.reconcile_trade_closure(active_trade)
+                                order_registry.mark_trade_closed(
+                                    exit_price=cur_market_price,
+                                    net_pnl=unPnl,
+                                    close_reason=f"Dynamic Exit: {exit_reason}",
+                                )
+                            else:
+                                orphans_cancelled = 0
 
                             exit_msg = (
                                 f"\n{'='*75}\n"
@@ -263,6 +323,7 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
                                 strategy.last_trade_close_time = time.time()
                             highest_price_seen = 0.0
                             lowest_price_seen = float('inf')
+                            trailing_active = False
                             prev_amt = amt
                             time.sleep(poll_interval)
                             continue
@@ -279,14 +340,38 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
                             current_lowest_price=lowest_price_seen,
                         )
 
-                        if new_trailing_sl is not None:
+                        if new_trailing_sl is not None and enable_trailing:
                             new_sl_quantized = universe_mgr.quantize_price(active_symbol, new_trailing_sl)
-                            trail_msg = f"[{now_str}] 📈 [TRAILING STOP] Cập nhật SL mới cho {active_symbol}: ${new_sl_quantized}"
+                            active_tier = getattr(exit_manager, 'last_active_tier', 1)
+                            if not trailing_active:
+                                trailing_active = True
+                                # 1. Hủy TP chốt non cũ để thả cho giá chạy bám trend
+                                reconciler.cancel_take_profit(active_trade)
+                                # 2. Thiết lập trần bảo hiểm khẩn cấp Wide TP
+                                wide_tp_price = universe_mgr.quantize_price(
+                                    active_symbol,
+                                    entry * (1.0 + wide_tp_pct) if pos_dir == 1 else entry * (1.0 - wide_tp_pct)
+                                )
+                                reconciler.place_take_profit_order(pos_dir, abs(amt), wide_tp_price)
+                                # 3. Cập nhật SL lên khóa lãi
+                                reconciler.update_stop_loss(pos_dir, abs(amt), new_sl_quantized)
+                                trail_msg = (
+                                    f"\n{'*'*75}\n"
+                                    f"🚀 [{now_str}] [{strategy.name.upper()}] KÍCH HOẠT TRAILING BẬC THANG TẦNG 1 CHO {active_symbol}:\n"
+                                    f"   • Giá hiện tại: ${cur_market_price:,.4f} | Entry: ${entry:,.4f}\n"
+                                    f"   • Hủy TP chốt non, đặt trần khẩn cấp (+{wide_tp_pct*100:.1f}%): ${wide_tp_price}\n"
+                                    f"   • Khóa cứng SL bảo hộ râu nến (+{tier1_lock_pct*100 if tier1_lock_pct else 1.0:.1f}%): ${new_sl_quantized}\n"
+                                    f"{'*'*75}"
+                                )
+                            else:
+                                if active_tier == 2:
+                                    trail_msg = f"[{now_str}] 🔥 [TẦNG 2: BÙNG NỔ BÁM ĐỈNH] {active_symbol}: Đỉnh ${highest_price_seen if pos_dir==1 else lowest_price_seen:,.4f} | Dời SL bám theo: ${new_sl_quantized}"
+                                else:
+                                    trail_msg = f"[{now_str}] 🛡️ [TẦNG 1: BẢO HỘ RÂU NẾN] {active_symbol}: Duy trì SL khóa lãi an toàn: ${new_sl_quantized}"
+                                reconciler.update_stop_loss(pos_dir, abs(amt), new_sl_quantized)
+
                             print(trail_msg)
                             with open(log_file, "a") as f: f.write(trail_msg + "\n")
-                            # Re-place SL order with new trailing price
-                            tp_p = universe_mgr.quantize_price(active_symbol, entry * (1.0 + strategy.take_profit_pct) if pos_dir == 1 else entry * (1.0 - strategy.take_profit_pct))
-                            reconciler.place_verified_protection_orders(pos_dir, abs(amt), tp_p, new_sl_quantized)
 
                 except Exception as e:
                     exit_err = f"[{now_str}] ⚠️ Dynamic Exit check error: {e}"
@@ -301,13 +386,20 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
                 has_regular = isinstance(orders, list) and len(orders) > 0
                 has_algo = isinstance(algos, list) and len(algos) > 0
 
-                if not has_regular or not has_algo:
-                    # Place missing protection orders immediately
-                    tp_p = universe_mgr.quantize_price(active_symbol, entry * (1.0 + strategy.take_profit_pct) if amt > 0 else entry * (1.0 - strategy.take_profit_pct))
+                if not has_regular:
+                    target_tp_pct = wide_tp_pct if trailing_active else strategy.take_profit_pct
+                    tp_p = universe_mgr.quantize_price(active_symbol, entry * (1.0 + target_tp_pct) if amt > 0 else entry * (1.0 - target_tp_pct))
+                    if (amt > 0 and tp_p <= cur_market_price) or (amt < 0 and tp_p >= cur_market_price):
+                        tp_p = universe_mgr.quantize_price(active_symbol, cur_market_price * 1.025 if amt > 0 else cur_market_price * 0.975)
+                    reconciler.place_take_profit_order(pos_dir, abs(amt), tp_p)
+                    prot_msg = f"[{now_str}] 🛡️ [RECONCILER] Đã tự động tái lập TP trên Binance cho {active_symbol}: Qty={abs(amt)} | TP=${tp_p} (Trailing={trailing_active})"
+                    print(prot_msg)
+                    with open(log_file, "a") as f: f.write(prot_msg + "\n")
+
+                if not has_algo:
                     sl_p = universe_mgr.quantize_price(active_symbol, entry * (1.0 - strategy.stop_loss_pct) if amt > 0 else entry * (1.0 + strategy.stop_loss_pct))
-                    
-                    reconciler.place_verified_protection_orders(pos_dir, abs(amt), tp_p, sl_p)
-                    prot_msg = f"[{now_str}] 🛡️ [RECONCILER] Đã tự động tái lập Hard TP/SL trên Binance cho {active_symbol}: Qty={abs(amt)} | TP=${tp_p} | SL=${sl_p}"
+                    reconciler.update_stop_loss(pos_dir, abs(amt), sl_p)
+                    prot_msg = f"[{now_str}] 🛡️ [RECONCILER] Đã tự động tái lập Hard SL trên Binance cho {active_symbol}: Qty={abs(amt)} | SL=${sl_p}"
                     print(prot_msg)
                     with open(log_file, "a") as f: f.write(prot_msg + "\n")
 
@@ -319,15 +411,14 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
 
             else:
                 # Step D: Flat (No Active Position) — Ready to evaluate new setup
-                # Clean up any leftover orphan orders first (Section 1.1)
+                # Clean up any leftover orphan orders for bot's registered trade ONLY
                 active_trade = order_registry.get_active_trade()
-                orphans = reconciler.reconcile_trade_closure(active_trade)
-                if len(active_pos) == 0:
-                    orphans += reconciler.reconcile_and_cleanup_orphans(amt)
-                if orphans > 0:
-                    orphan_msg = f"[{now_str}] 🧹 [RECONCILER] Đã dọn sạch {orphans} lệnh mồ côi {active_symbol} trước khi tìm kiếm cơ hội mới."
-                    print(orphan_msg)
-                    with open(log_file, "a") as f: f.write(orphan_msg + "\n")
+                if active_trade:
+                    orphans = reconciler.reconcile_trade_closure(active_trade)
+                    if orphans > 0:
+                        orphan_msg = f"[{now_str}] 🧹 [RECONCILER] Đã dọn sạch {orphans} lệnh mồ côi {active_symbol} trước khi tìm kiếm cơ hội mới."
+                        print(orphan_msg)
+                        with open(log_file, "a") as f: f.write(orphan_msg + "\n")
 
                 # Fetch market data for primary baseline (BTC)
                 candles = fetch_recent_candles("BTCUSDT", limit=100)
@@ -383,6 +474,16 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
                             continue
 
                         target_sym = decision.extra_metrics.get("selected_symbol", strategy.symbol) if decision.extra_metrics else strategy.symbol
+
+                        # Safety: Do not open if user has a manual/voucher position in this exact symbol
+                        if isinstance(all_pos, list):
+                            manual_same_sym = [p for p in all_pos if p.get("symbol") == target_sym and abs(float(p.get("positionAmt", 0.0))) > 1e-5]
+                            if manual_same_sym:
+                                skip_msg = f"[{now_str}] ℹ️ BỎ QUA {target_sym}: Tài khoản đang có sẵn vị thế thủ công/voucher trên cặp này, bot không mở đè."
+                                print(skip_msg)
+                                with open(log_file, "a") as f: f.write(skip_msg + "\n")
+                                time.sleep(poll_interval)
+                                continue
                         active_symbol = target_sym
                         reconciler = OrderReconciler(client, symbol=target_sym)
                         client.init_account_settings(target_sym, leverage=strategy.leverage)
@@ -467,16 +568,32 @@ def run_daemon(strategy_name: str = "chien_thuat_3", poll_interval: int = 25):
                         print(order_msg)
                         with open(log_file, "a") as f: f.write(order_msg + "\n")
 
+                        # Track daily trade count (Fix #5: prevent fee accumulation)
+                        risk_mgr.record_trade_opened()
+
                         prev_amt = qty if decision.signal == 1 else -qty
                         prev_equity = equity
                         entry_timestamp = time.time()
+                        trailing_active = False
+                        highest_price_seen = cur_price
+                        lowest_price_seen = cur_price
 
             prev_amt = amt
+            consecutive_errors = 0  # Reset error count on successful iteration
 
         except Exception as e:
-            err_msg = f"[{now_str}] ⚠️ Lỗi vòng lặp daemon: {e}"
+            consecutive_errors += 1
+            # Exponential backoff: 25s -> 50s -> 100s -> 200s -> max 300s
+            backoff_secs = min(poll_interval * (2 ** (consecutive_errors - 1)), 300)
+            err_msg = f"[{now_str}] ⚠️ Lỗi vòng lặp daemon (#{consecutive_errors}): {e} — Tạm nghỉ {backoff_secs}s trước khi thử lại..."
             print(err_msg)
             with open(log_file, "a") as f: f.write(err_msg + "\n")
+
+            for _ in range(backoff_secs):
+                if not running:
+                    break
+                time.sleep(1)
+            continue
 
         # Sleep interval with graceful interrupt
         for _ in range(poll_interval):
@@ -491,6 +608,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Universal 24/7 Trading Daemon")
     parser.add_argument("--strategy", type=str, default="chien_thuat_3", help="Tên chiến thuật (VD: chien_thuat_3, chien_thuat_4...)")
     parser.add_argument("--interval", type=int, default=25, help="Chu kỳ quét thị trường tính theo giây (mặc định 25s)")
+    parser.add_argument("--mode", type=str, default=None, choices=["demo", "live"], help="Chế độ giao dịch (demo hoặc live)")
     args = parser.parse_args()
 
-    run_daemon(strategy_name=args.strategy, poll_interval=args.interval)
+    run_daemon(strategy_name=args.strategy, poll_interval=args.interval, mode=args.mode)

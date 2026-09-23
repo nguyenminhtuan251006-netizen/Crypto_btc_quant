@@ -20,8 +20,8 @@ class CrossSectionalRanker:
 
     def __init__(
         self,
-        min_abs_score: float = 1.25,
-        min_score_gap: float = 0.20,
+        min_abs_score: float = 1.50,       # Raised from 1.25 → 1.50 for higher conviction
+        min_score_gap: float = 0.30,       # Raised from 0.20 → 0.30 (Top 1 must clearly dominate)
         min_consensus: int = 4,
         cost_ratio_threshold: float = 3.0,
     ):

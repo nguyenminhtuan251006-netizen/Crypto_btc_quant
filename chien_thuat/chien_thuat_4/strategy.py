@@ -62,6 +62,15 @@ class AFCXStrategy(BaseStrategy):
         self.exit_manager = DynamicExitManager()
         self.session_mgr = SessionManager()  # v3 Dual Session Manager
 
+        # Trailing Take Profit: Cơ chế Bậc Thang 2 Tầng (Chống quét râu Altcoin)
+        self.enable_trailing = True
+        self.tier1_trigger_pct = 0.015          # Tầng 1: Đạt +1.5% (~1.2R)
+        self.tier1_lock_pct = 0.012             # Ghim cứng SL tại +1.2% (chống quét râu)
+        self.tier2_trigger_pct = 0.022          # Tầng 2: Vượt +2.2% bùng nổ bám đỉnh
+        self.trailing_callback_pct = 0.0065     # Lùi 0.65% bám sát theo sau đỉnh
+        self.profit_lock_floor_pct = 0.0015     # Khóa tối thiểu hòa vốn
+        self.wide_tp_pct = 0.15                 # Trần chốt lời khẩn cấp +15.0%
+
         self.selected_symbol: str = symbol
         self.last_rank_time = 0.0
         self.cached_ranking: List[Dict[str, Any]] = []
@@ -91,7 +100,7 @@ class AFCXStrategy(BaseStrategy):
     def fetch_symbol_market_snapshot(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Fetch 15m candles, orderbook, and ticker info for a candidate symbol."""
         try:
-            base_url = "https://demo-fapi.binance.com"
+            base_url = "https://fapi.binance.com"
             # 1. Candles 15m (limit 30)
             c_res = requests.get(f"{base_url}/fapi/v1/klines", params={"symbol": symbol, "interval": "15m", "limit": 30}, timeout=4)
             if c_res.status_code != 200:
@@ -249,6 +258,14 @@ class AFCXStrategy(BaseStrategy):
                 signal=0,
                 confidence=0.0,
                 reason=f"🛑 REGIME STRESS [{session_profile.name}]: {regime_reason} (Khóa mở lệnh mới để bảo vệ vốn)",
+            )
+
+        # FLAT regime: prolonged sideway with compressed volatility — block all entries
+        if regime == "FLAT":
+            return StrategyDecision(
+                signal=0,
+                confidence=0.0,
+                reason=f"🚫 REGIME FLAT [{session_profile.name}]: {regime_reason}",
             )
 
         if not ranked or len(ranked) < 2:

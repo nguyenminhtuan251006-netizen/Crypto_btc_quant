@@ -31,28 +31,61 @@ from paper_trader import (
     compute_realtime_microstructure,
 )
 
-BASE_URL = "https://demo-fapi.binance.com"
-
-
-def load_credentials():
+def get_binance_mode():
     env_path = os.path.join(workspace_dir, ".env")
-    api_key = ""
-    api_secret = ""
     if os.path.exists(env_path):
         with open(env_path, "r") as f:
             for line in f:
                 line = line.strip()
-                if line.startswith("BINANCE_DEMO_API_KEY="):
-                    api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if line.startswith("BINANCE_MODE="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'").lower()
+    return "demo"
+
+
+def get_base_url():
+    mode = get_binance_mode()
+    if mode == "live":
+        return "https://fapi.binance.com"
+    return "https://demo-fapi.binance.com"
+
+
+BASE_URL = get_base_url()
+
+
+def load_credentials(mode: str = None):
+    env_path = os.path.join(workspace_dir, ".env")
+    demo_key = ""
+    demo_secret = ""
+    live_key = ""
+    live_secret = ""
+    target_mode = mode.lower() if mode else get_binance_mode()
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("BINANCE_API_KEY="):
+                    live_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                elif line.startswith("BINANCE_API_SECRET="):
+                    live_secret = line.split("=", 1)[1].strip().strip('"').strip("'")
+                elif line.startswith("BINANCE_DEMO_API_KEY="):
+                    demo_key = line.split("=", 1)[1].strip().strip('"').strip("'")
                 elif line.startswith("BINANCE_DEMO_API_SECRET="):
-                    api_secret = line.split("=", 1)[1].strip().strip('"').strip("'")
-    return api_key, api_secret
+                    demo_secret = line.split("=", 1)[1].strip().strip('"').strip("'")
+
+    if target_mode == "live" and live_key and live_secret:
+        return live_key, live_secret
+    if target_mode == "demo" and demo_key and demo_secret:
+        return demo_key, demo_secret
+    if demo_key and demo_secret:
+        return demo_key, demo_secret
+    return live_key or demo_key, live_secret or demo_secret
 
 
 class BinanceDemoClient:
-    def __init__(self, api_key: str, api_secret: str):
+    def __init__(self, api_key: str, api_secret: str, base_url: str = None):
         self.api_key = api_key
         self.api_secret = api_secret
+        self.base_url = base_url or get_base_url()
         self.headers = {"X-MBX-APIKEY": self.api_key}
 
     def _sign(self, params: dict) -> dict:
@@ -65,19 +98,19 @@ class BinanceDemoClient:
     def get(self, endpoint: str, params=None):
         if params is None: params = {}
         p = self._sign(params)
-        r = requests.get(f"{BASE_URL}{endpoint}", params=p, headers=self.headers, timeout=8)
+        r = requests.get(f"{self.base_url}{endpoint}", params=p, headers=self.headers, timeout=8)
         return r.json()
 
     def post(self, endpoint: str, params=None):
         if params is None: params = {}
         p = self._sign(params)
-        r = requests.post(f"{BASE_URL}{endpoint}", data=p, headers=self.headers, timeout=8)
+        r = requests.post(f"{self.base_url}{endpoint}", data=p, headers=self.headers, timeout=8)
         return r.json()
 
     def delete(self, endpoint: str, params=None):
         if params is None: params = {}
         p = self._sign(params)
-        r = requests.delete(f"{BASE_URL}{endpoint}", params=p, headers=self.headers, timeout=8)
+        r = requests.delete(f"{self.base_url}{endpoint}", params=p, headers=self.headers, timeout=8)
         return r.json()
 
     def init_account_settings(self, symbol="BTCUSDT", leverage=5):

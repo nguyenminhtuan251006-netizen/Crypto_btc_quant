@@ -22,7 +22,7 @@ class Strategy5Adapter(BaseStrategy):
         super().__init__(
             name="chien_thuat_5",
             symbol="ETHUSDT",
-            leverage=5,
+            leverage=10,
             default_qty=0.001,
             take_profit_pct=0.012,
             stop_loss_pct=0.006,
@@ -33,6 +33,15 @@ class Strategy5Adapter(BaseStrategy):
         self.session_mgr = self.strat.session_mgr
         self.cached_ranking = self.strat.cached_ranking
         self.last_trade_close_time = self.strat.last_trade_close_time
+
+        # Trailing Parameters (Bậc Thang 2 Tầng)
+        self.enable_trailing = self.strat.enable_trailing
+        self.tier1_trigger_pct = getattr(self.strat, 'tier1_trigger_pct', None)
+        self.tier1_lock_pct = getattr(self.strat, 'tier1_lock_pct', None)
+        self.tier2_trigger_pct = getattr(self.strat, 'tier2_trigger_pct', None)
+        self.trailing_callback_pct = self.strat.trailing_callback_pct
+        self.profit_lock_floor_pct = self.strat.profit_lock_floor_pct
+        self.wide_tp_pct = self.strat.wide_tp_pct
 
     def initialize(self):
         """Initialize universe and cache metadata."""
