@@ -28,7 +28,13 @@ MODE="${3:-}"
 # Portable launcher only for AFCX strategies; keep other strategies unchanged.
 if [[ "$STRATEGY" = "chien_thuat_4" || "$STRATEGY" = "chien_thuat_5" || "$STRATEGY" = "strategy_4" || "$STRATEGY" = "strategy_5" ]]; then
     PYTHON_BIN="${QUANT_PYTHON:-$WORKSPACE_DIR/.venv/bin/python}"
-    [ -x "$PYTHON_BIN" ] || PYTHON_BIN="$(command -v python3)"
+    if [ ! -x "$PYTHON_BIN" ]; then
+        if [ -x "/home/tuannm/.venv/bin/python" ]; then
+            PYTHON_BIN="/home/tuannm/.venv/bin/python"
+        else
+            PYTHON_BIN="$(command -v python3)"
+        fi
+    fi
 fi
 
 # Tự động gán mode phù hợp nếu không truyền

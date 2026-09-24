@@ -32,3 +32,9 @@ models/*.bin
 *.pid
 .vscode/
 .idea/
+.venv/
+.venv
+
+# Unseen test raw datasets
+data/unseen_test/
+
