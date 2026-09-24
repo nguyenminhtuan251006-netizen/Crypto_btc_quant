@@ -1,5 +1,10 @@
 # CHIẾN THUẬT 5: AFCX Micro-Capital Edition (Tối ưu vốn ~6–50 USDT)
 
+> Cập nhật: xem [SAFETY_UPDATE.md](SAFETY_UPDATE.md) cho hành vi hiện tại.
+> Các con số floor 15 USDT, lỗ tối đa 0,09 USDT và khẳng định an toàn dưới đây
+> thuộc thiết kế cũ, không còn là cam kết của bản đã sửa. Bản mới bỏ qua lệnh
+> nếu lượng tối thiểu trên sàn vượt ngân sách rủi ro.
+
 ## 1. Giới thiệu
 Chiến thuật 5 được tùy biến đặc biệt từ mô típ định lượng **AFCX v3 Dual-Session Architecture (Chiến thuật 4)** nhưng được tinh chỉnh để chạy hiệu quả và an toàn tuyệt đối với số vốn siêu nhỏ: **từ 6 USDT (~150.000 VNĐ)** trên sàn Binance Futures thật hoặc demo.
 

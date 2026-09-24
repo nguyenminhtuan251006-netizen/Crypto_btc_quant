@@ -59,7 +59,8 @@ class CrossSectionalRanker:
                 df[f"z_{col}"] = 0.0
 
         # Market-wide Network Momentum (mean momentum of the universe)
-        net_momentum = float(df["z_m_1h"].mean())
+        # Preserve absolute market direction; mean cross-sectional Z is ~zero.
+        net_momentum = winsorize_z(float(df["m_1h"].mean()) / (float(df["m_1h"].std(ddof=0)) + 1e-9))
 
         # Check if extended multi-agent features are actively present
         has_extended = ("z_taker_bias" in df.columns and df["z_taker_bias"].abs().sum() > 1e-6)
@@ -67,6 +68,8 @@ class CrossSectionalRanker:
         ranked_results = []
         for _, row in df.iterrows():
             sym = row["symbol"]
+            # Volume confirms direction; low volume is not a short signal.
+            volume_confirmation = max(0.0, row["z_rel_volume"]) * np.sign(row["ofi_15m"])
 
             # 1. Direction Score D_i (Section 11)
             if has_extended:
@@ -76,7 +79,7 @@ class CrossSectionalRanker:
                     + 0.22 * row["z_ofi_15m"]
                     + 0.13 * row["z_oi_confirmation"]
                     + 0.08 * row["z_book_imbalance"]
-                    + 0.08 * row["z_rel_volume"]
+                    + 0.08 * volume_confirmation
                     + 0.05 * net_momentum
                     + 0.08 * row["z_taker_bias"]
                     + 0.06 * (-row["z_ls_bias"])  # Contrarian: too many longs = bearish signal
@@ -90,7 +93,7 @@ class CrossSectionalRanker:
                     + 0.25 * row["z_ofi_15m"]
                     + 0.15 * row["z_oi_confirmation"]
                     + 0.10 * row["z_book_imbalance"]
-                    + 0.10 * row["z_rel_volume"]
+                    + 0.10 * volume_confirmation
                     + 0.05 * net_momentum
                 )
                 c_i = 0.60 * row["z_funding_z"] + 0.40 * row["z_basis_z"]
@@ -108,7 +111,7 @@ class CrossSectionalRanker:
                 row["z_ofi_15m"],
                 row["z_oi_confirmation"],
                 row["z_book_imbalance"],
-                row["z_rel_volume"],
+                volume_confirmation,
                 row["z_m_4h"],
             ]
             agreement_count = sum(1 for ind in indicators if np.sign(ind) == direction_sign)
@@ -129,6 +132,8 @@ class CrossSectionalRanker:
                 "z_taker_bias": float(row["z_taker_bias"]),
                 "z_ls_bias": float(row["z_ls_bias"]),
                 "funding_raw": float(row.get("funding_raw", 0.0001)),
+                "momentum_raw": float(row["m_1h"]),
+                "flow_raw": float(row["ofi_15m"]),
             })
 
         # Sort descending by absolute score
@@ -154,6 +159,9 @@ class CrossSectionalRanker:
         score1 = cand1["abs_score"]
         score2 = cand2["abs_score"]
         gap = score1 - score2
+
+        if cand1.get("momentum_raw", 0.0) * cand1["direction"] <= 0:
+            return False, None, "ABSOLUTE_DIRECTION: Relative strength conflicts with absolute momentum"
 
         # 1. Confidence Gate (Section 14)
         if score1 < self.min_abs_score:

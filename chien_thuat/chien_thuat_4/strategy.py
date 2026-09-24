@@ -88,7 +88,8 @@ class AFCXStrategy(BaseStrategy):
         try:
             r = requests.get("https://fapi.binance.com/fapi/v1/klines", params={"symbol": "BTCUSDT", "interval": "1h", "limit": limit}, timeout=4)
             if r.status_code == 200:
-                df = pd.DataFrame(r.json()).iloc[:, [0, 1, 2, 3, 4, 5]]
+                rows = [row for row in r.json() if int(row[6]) < int(time.time() * 1000)]
+                df = pd.DataFrame(rows).iloc[:, [0, 1, 2, 3, 4, 5]]
                 df.columns = ["open_time", "open", "high", "low", "close", "volume"]
                 for c in ["open", "high", "low", "close", "volume"]:
                     df[c] = df[c].astype(float)
@@ -106,6 +107,9 @@ class AFCXStrategy(BaseStrategy):
             if c_res.status_code != 200:
                 return None
             raw_c = c_res.json()
+            raw_c = [row for row in raw_c if int(row[6]) < int(time.time() * 1000)]
+            if not raw_c or time.time() * 1000 - int(raw_c[-1][6]) > 16 * 60 * 1000:
+                return None
             candles = pd.DataFrame(raw_c, columns=[
                 "open_time", "open", "high", "low", "close", "volume",
                 "close_time", "quote_asset_volume", "trades",
@@ -304,7 +308,7 @@ class AFCXStrategy(BaseStrategy):
         passed_persist, persist_msg = self.session_mgr.check_persistence_gate(
             candidate_symbol=self.selected_symbol,
             candidate_direction=dir_sign,
-            now_ts=now_ts,
+            now_ts=self.last_rank_time,
             profile=session_profile,
         )
         if not passed_persist:

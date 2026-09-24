@@ -43,6 +43,14 @@ class Strategy5Adapter(BaseStrategy):
         self.wide_tp_pct = self.strat.wide_tp_pct
 
     @property
+    def last_trade_close_time(self):
+        return self.strat.last_trade_close_time
+
+    @last_trade_close_time.setter
+    def last_trade_close_time(self, value):
+        self.strat.last_trade_close_time = value
+
+    @property
     def cached_ranking(self):
         """Always return real-time cached ranking from underlying strategy."""
         return getattr(self.strat, 'cached_ranking', [])

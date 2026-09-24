@@ -120,6 +120,9 @@ class SessionManager:
         if not profile.persistence_required:
             return True, "Persistence Gate: Bỏ qua (Phiên LIQUID)"
 
+        if now_ts == self.last_candidate_timestamp:
+            return False, "PERSISTENCE: Chờ bảng xếp hạng mới, không đếm lại dữ liệu cache"
+
         is_same_candidate = (
             self.last_candidate_symbol == candidate_symbol
             and self.last_candidate_direction == candidate_direction

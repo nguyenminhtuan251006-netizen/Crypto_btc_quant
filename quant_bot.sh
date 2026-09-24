@@ -25,6 +25,12 @@ COMMAND="$1"
 STRATEGY="${2:-chien_thuat_5}"
 MODE="${3:-}"
 
+# Portable launcher only for AFCX strategies; keep other strategies unchanged.
+if [[ "$STRATEGY" = "chien_thuat_4" || "$STRATEGY" = "chien_thuat_5" || "$STRATEGY" = "strategy_4" || "$STRATEGY" = "strategy_5" ]]; then
+    PYTHON_BIN="${QUANT_PYTHON:-$WORKSPACE_DIR/.venv/bin/python}"
+    [ -x "$PYTHON_BIN" ] || PYTHON_BIN="$(command -v python3)"
+fi
+
 # Tự động gán mode phù hợp nếu không truyền
 if [ -z "$MODE" ]; then
     if [ "$STRATEGY" = "chien_thuat_5" ]; then
@@ -66,7 +72,11 @@ case "$COMMAND" in
         echo "  • Máy chủ Linux:   Hoạt động độc lập 24/7 (Tắt app / tắt máy vẫn chạy)"
         echo "================================================================================"
 
-        nohup env PYTHONUNBUFFERED=1 "$PYTHON_BIN" -u "$WORKSPACE_DIR/execution/daemon.py" --strategy "$STRATEGY" --mode "$MODE" > /dev/null 2>> "$LOG_FILE" &
+        if [[ "$STRATEGY" = "chien_thuat_4" || "$STRATEGY" = "chien_thuat_5" || "$STRATEGY" = "strategy_4" || "$STRATEGY" = "strategy_5" ]]; then
+            nohup env PYTHONUNBUFFERED=1 "$PYTHON_BIN" -u "$WORKSPACE_DIR/execution/daemon.py" --strategy "$STRATEGY" --mode "$MODE" >> "$LOG_FILE" 2>&1 &
+        else
+            nohup env PYTHONUNBUFFERED=1 "$PYTHON_BIN" -u "$WORKSPACE_DIR/execution/daemon.py" --strategy "$STRATEGY" --mode "$MODE" > /dev/null 2>> "$LOG_FILE" &
+        fi
         BOT_PID=$!
         echo "$BOT_PID" > "$PID_FILE"
 

@@ -31,6 +31,7 @@ class Strategy4Adapter(BaseStrategy):
         self.afcx = AFCXStrategy(name="chien_thuat_4", leverage=self.leverage)
         # Override risk: reduce from 0.5% to 0.2% per trade while validating long-term performance
         self.afcx.risk_pct = 0.002
+        self.risk_fraction = 0.002
         self.session_mgr = self.afcx.session_mgr
 
         # Trailing Parameters (Bậc Thang 2 Tầng)
@@ -41,6 +42,14 @@ class Strategy4Adapter(BaseStrategy):
         self.trailing_callback_pct = self.afcx.trailing_callback_pct
         self.profit_lock_floor_pct = self.afcx.profit_lock_floor_pct
         self.wide_tp_pct = self.afcx.wide_tp_pct
+
+    @property
+    def last_trade_close_time(self):
+        return self.afcx.last_trade_close_time
+
+    @last_trade_close_time.setter
+    def last_trade_close_time(self, value):
+        self.afcx.last_trade_close_time = value
 
     @property
     def cached_ranking(self):

@@ -1,5 +1,9 @@
 # 🔍 Đánh Giá Chiến Thuật 5: Khả Thi Với Vốn 8.55 USDT?
 
+> Báo cáo lịch sử, không dùng để xác nhận trạng thái live hoặc độ an toàn hiện tại.
+> Xem [bản sửa vận hành](SAFETY_UPDATE.md). Chưa có backtest xác nhận lợi nhuận
+> cho bản sửa này; các tuyên bố “an toàn” và “mất tối đa” bên dưới đã lỗi thời.
+
 ## Tổng Quan Nhanh
 
 | Tiêu chí | Đánh giá | Trạng thái |
