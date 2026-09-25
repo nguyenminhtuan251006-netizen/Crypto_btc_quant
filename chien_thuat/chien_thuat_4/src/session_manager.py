@@ -32,7 +32,7 @@ class SessionProfileConfig:
 LIQUID_PROFILE = SessionProfileConfig(
     name="LIQUID",
     trend_z_min=1.50,               # Raised from 1.25 -> 1.50 for high-conviction entries
-    range_z_min=1.65,               # Raised from 1.35 -> 1.65
+    range_z_min=1.55,               # Strategies 4/5: relaxed from 1.65 for LIQUID RANGE/TRANSITION
     confidence_gap_min=0.30,        # Raised from 0.20 -> 0.30 (Top 1 must dominate)
     consensus_min=4,
     cost_multiple_min=2.5,
