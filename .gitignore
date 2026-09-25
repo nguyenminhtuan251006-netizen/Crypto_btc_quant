@@ -5,7 +5,11 @@
 
 # Logs
 *.log
-logs/
+logs/*
+!logs/decisions_chien_thuat_4_demo.jsonl
+!logs/decisions_chien_thuat_5_live.jsonl
+!logs/live_chien_thuat_4_demo.log
+!logs/live_chien_thuat_5_live.log
 
 # Python bytecode & cache
 __pycache__/
