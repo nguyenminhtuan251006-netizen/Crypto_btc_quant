@@ -219,6 +219,23 @@ class SafetyTests(unittest.TestCase):
         self.assertFalse(passed)
         self.assertIn('ABSOLUTE_DIRECTION', reason)
 
+    def test_init_account_settings_tolerates_multi_assets_mode(self):
+        client = AFCXClient('unused', 'unused', 'https://invalid')
+        # Leverage confirms 10x
+        # positionRisk returns cross
+        # marginType returns -4168 Multi-Assets Mode error
+        client.get = Mock(return_value=[{'positionSide': 'BOTH', 'marginType': 'cross'}])
+        def mock_post(endpoint, params=None):
+            if endpoint == '/fapi/v1/leverage':
+                return {'leverage': 10}
+            if endpoint == '/fapi/v1/marginType':
+                raise RuntimeError("Binance /fapi/v1/marginType (400): [-4168] Unable to adjust to isolated-margin mode under the Multi-Assets mode.")
+            return {}
+        client.post = Mock(side_effect=mock_post)
+        # Should not raise exception
+        client.init_account_settings('OPUSDT', leverage=10)
+        self.assertTrue(client.post.called)
+
 
 if __name__ == '__main__':
     unittest.main()

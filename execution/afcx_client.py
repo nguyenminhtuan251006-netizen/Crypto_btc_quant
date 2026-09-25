@@ -21,8 +21,20 @@ class AFCXClient:
         kwargs = {"params" if method == "GET" else "data": signed}
         response = requests.request(method, self.base_url + endpoint,
                                     headers=self.headers, timeout=8, **kwargs)
-        response.raise_for_status()
-        result = response.json()
+        try:
+            result = response.json()
+        except Exception:
+            response.raise_for_status()
+            raise
+
+        status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int) and status_code >= 400:
+            code = result.get("code") if isinstance(result, dict) else None
+            msg = result.get("msg") if isinstance(result, dict) else response.text
+            raise RuntimeError(f"Binance {endpoint} ({status_code}): [{code}] {msg}")
+
+        if hasattr(response, "raise_for_status"):
+            response.raise_for_status()
         if isinstance(result, dict) and int(result.get("code", 0)) < 0:
             raise RuntimeError(f"Binance {endpoint}: {result.get('code')} {result.get('msg')}")
         return result
@@ -47,7 +59,18 @@ class AFCXClient:
         if any(p.get("positionSide") != "BOTH" for p in positions):
             raise RuntimeError("AFCX requires one-way position mode")
         if any(str(p.get("marginType", "")).lower() != "isolated" for p in positions):
-            self.post("/fapi/v1/marginType", {"symbol": symbol, "marginType": "ISOLATED"})
+            try:
+                self.post("/fapi/v1/marginType", {"symbol": symbol, "marginType": "ISOLATED"})
+            except Exception as e:
+                err_msg = str(e)
+                # -4046: No need to change margin type
+                # -4168: Unable to adjust to isolated-margin mode under the Multi-Assets mode
+                if "-4046" in err_msg or "No need to change" in err_msg:
+                    pass
+                elif "-4168" in err_msg or "Multi-Assets" in err_msg:
+                    print(f"ℹ️ [AFCXClient] Tài khoản đang bật Multi-Assets Mode, {symbol} duy trì Cross Margin theo quy định của Binance.")
+                else:
+                    raise
 
     def place_market_order(self, symbol, side, qty, reduce_only=False, client_order_id=None):
         params = {"symbol": symbol, "side": side, "type": "MARKET", "quantity": qty,

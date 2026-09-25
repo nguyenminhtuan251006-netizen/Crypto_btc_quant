@@ -41,4 +41,5 @@ models/*.bin
 
 # Unseen test raw datasets
 data/unseen_test/
+data/unseen_historical_2025/
 
