@@ -126,6 +126,27 @@ class SafetyTests(unittest.TestCase):
             self.assertLess(notional, 15)
             self.assertLessEqual(qty * 100 * (0.015 + 0.0014), 8.55 * 0.005 + 1e-12)
 
+    def test_small_exchange_minimum_is_a_clear_skip_not_an_error(self):
+        from execution.afcx_daemon import entry_size_skip_reason
+
+        universe = UniverseManager()
+        universe.metadata_cache['TEST'] = dict(
+            tick_size=0.01, step_size=0.1, market_step_size=0.1,
+            min_qty=0.1, market_min_qty=0.1, market_max_qty=1000,
+            min_notional=5,
+        )
+        reason = entry_size_skip_reason(
+            universe, 'TEST', qty=3.0, price=1.0, equity=8.55,
+            risk_fraction=0.005, stop_pct=0.012,
+        )
+        self.assertIn('chỉ đạt 3.00 USDT', reason)
+        self.assertIn('tối thiểu 5.00 USDT', reason)
+        self.assertIn('ước tính cần khoảng 13.40 USDT', reason)
+        self.assertIsNone(entry_size_skip_reason(
+            universe, 'TEST', qty=5.0, price=1.0, equity=20.0,
+            risk_fraction=0.005, stop_pct=0.012,
+        ))
+
     def test_precision_uses_steps_and_does_not_round_up(self):
         universe = UniverseManager()
         universe.metadata_cache['TEST'] = dict(tick_size=0.25, step_size=0.05)
