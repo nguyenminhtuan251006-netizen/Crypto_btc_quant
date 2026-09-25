@@ -52,6 +52,29 @@ signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
 
 
+def entry_size_skip_reason(universe_mgr, symbol, qty, price, equity, risk_fraction, stop_pct):
+    """Explain exchange-minimum rejection without turning it into a daemon error."""
+    metadata = universe_mgr.get_symbol_metadata(symbol)
+    min_qty = float(metadata.get("market_min_qty", metadata.get("min_qty", 0.0)))
+    min_notional = float(metadata.get("min_notional", 0.0))
+    actual_notional = float(qty) * float(price)
+
+    if qty >= min_qty and actual_notional >= min_notional:
+        return None
+
+    required_notional = max(min_notional, min_qty * float(price))
+    estimated_equity = (
+        required_notional * (float(stop_pct) + 0.0014) / float(risk_fraction)
+        if risk_fraction > 0 else 0.0
+    )
+    return (
+        f"Vị thế theo ngân sách rủi ro chỉ đạt {actual_notional:.2f} USDT sau làm tròn; "
+        f"{symbol} yêu cầu tối thiểu {required_notional:.2f} USDT. "
+        f"Với SL {stop_pct*100:.2f}% và risk {risk_fraction*100:.2f}%, "
+        f"vốn hiện tại {equity:.2f} USDT; ước tính cần khoảng {estimated_equity:.2f} USDT"
+    )
+
+
 def run_daemon(strategy_name: str = "chien_thuat_5", poll_interval: int = 25, mode: str = None):
     resolved_mode = (mode or os.getenv("BINANCE_MODE", "demo")).lower()
     os.makedirs(os.path.join(workspace_dir, "logs"), exist_ok=True)
@@ -579,6 +602,26 @@ def _run_daemon(strategy_name, poll_interval, resolved_mode):
 
                         universe_mgr.refresh_exchange_metadata(base_url=base_url)
                         qty = universe_mgr.quantize_qty(target_sym, raw_qty)
+                        size_skip = entry_size_skip_reason(
+                            universe_mgr=universe_mgr,
+                            symbol=target_sym,
+                            qty=qty,
+                            price=cand_entry_p,
+                            equity=equity,
+                            risk_fraction=risk_mgr.risk_fraction,
+                            stop_pct=sl_pct,
+                        )
+                        if size_skip:
+                            skip_msg = (
+                                f"[{now_str}] ℹ️ BỎ QUA {target_sym}: {size_skip}. "
+                                "Bot không tự nâng vị thế vượt ngân sách rủi ro."
+                            )
+                            print(skip_msg)
+                            with open(log_file, "a") as f:
+                                f.write(skip_msg + "\n")
+                            time.sleep(poll_interval)
+                            continue
+
                         universe_mgr.validate_entry(target_sym, qty, cand_entry_p)
                         required_margin = qty * cand_entry_p / strategy.leverage
                         if required_margin + qty * cand_entry_p * 0.0014 > float(acc_info.get("availableBalance", 0)):
