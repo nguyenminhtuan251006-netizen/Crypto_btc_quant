@@ -165,6 +165,14 @@ case "$COMMAND" in
                 echo "  • Môi trường:          $(echo "$MODE_ARG" | tr '[:lower:]' '[:upper:]')"
                 echo "  • Thời gian chạy:      $UPTIME"
                 echo "  • Bộ nhớ tiêu thụ:     $MEM"
+                if [ "$STRAT_ARG" = "chien_thuat_4" ] && [ -f "$WORKSPACE_DIR/execution/afcx_daemon.py" ]; then
+                    PROCESS_AGE=$(ps -p "$PID" -o etimes= 2>/dev/null | tr -d ' ')
+                    SOURCE_MTIME=$(stat -c %Y "$WORKSPACE_DIR/execution/afcx_daemon.py" 2>/dev/null)
+                    if [[ "$PROCESS_AGE" =~ ^[0-9]+$ && "$SOURCE_MTIME" =~ ^[0-9]+$ ]] &&
+                       (( SOURCE_MTIME > $(date +%s) - PROCESS_AGE )); then
+                        echo "  ⚠️ Mã bot 4 đã đổi sau khi tiến trình khởi động. Nạp mã mới: ./quant_bot.sh restart chien_thuat_4 $MODE_ARG"
+                    fi
+                fi
             done
         else
             echo "  ⚪ Hiện không có bot nào đang chạy."
