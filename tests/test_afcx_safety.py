@@ -19,7 +19,7 @@ from execution.adapters.strategy_5 import Strategy5Adapter
 
 
 class SafetyTests(unittest.TestCase):
-    def exercise_daemon(self, reject_close=False):
+    def exercise_daemon(self, reject_close=False, strategy_name='chien_thuat_5'):
         import pandas as pd
         import execution.afcx_daemon as daemon
         from execution.strategy_interface import StrategyDecision
@@ -73,7 +73,7 @@ class SafetyTests(unittest.TestCase):
                 return {}
 
         exchange = Exchange()
-        strategy = SimpleNamespace(name='chien_thuat_5', symbol='ETHUSDT', leverage=10,
+        strategy = SimpleNamespace(name=strategy_name, symbol='ETHUSDT', leverage=10,
             stop_loss_pct=0.006, take_profit_pct=0.012, enable_trailing=True, wide_tp_pct=0.08,
             cached_ranking=[dict(symbol='ETHUSDT', final_score=-1)], last_trade_close_time=0,
             analyze=lambda data: StrategyDecision(signal=1 if exchange.stage == 1 else 0,
@@ -95,8 +95,8 @@ class SafetyTests(unittest.TestCase):
                 stack.enter_context(patch.object(daemon, target, value))
             stack.enter_context(patch('time.sleep'))
             stack.enter_context(redirect_stdout(io.StringIO()))
-            daemon.run_daemon('chien_thuat_5', poll_interval=1, mode='demo')
-            registry = OrderRegistry(str(Path(directory) / 'logs/trade_registry_chien_thuat_5_demo.json'))
+            daemon.run_daemon(strategy_name, poll_interval=1, mode='demo')
+            registry = OrderRegistry(str(Path(directory) / f'logs/trade_registry_{strategy_name}_demo.json'))
             return exchange.events, registry.data
 
     def test_full_entry_protection_exit_and_settlement(self):
@@ -106,6 +106,13 @@ class SafetyTests(unittest.TestCase):
         self.assertTrue(all(stage == 3 for action, stage in events if action == 'cancel'))
         self.assertIsNone(registry['active_trade'])
         self.assertEqual(registry['closed_trades'][0]['net_pnl'], -0.1)
+
+    def test_strategy4_qualified_signal_reaches_exchange(self):
+        # Regression: a valid AFCX signal previously crashed on the undefined
+        # fetch_orderbook name before the market entry was submitted.
+        events, registry = self.exercise_daemon(strategy_name='chien_thuat_4')
+        self.assertEqual(events[:3], [('entry', 1), ('stop', 1), ('tp', 1)])
+        self.assertIsNone(registry['active_trade'])
 
     def test_rejected_close_preserves_ownership_and_protection(self):
         events, registry = self.exercise_daemon(reject_close=True)
