@@ -236,6 +236,12 @@ class SafetyTests(unittest.TestCase):
         client.init_account_settings('OPUSDT', leverage=10)
         self.assertTrue(client.post.called)
 
+    def test_micro_capital_strategy5_has_adjusted_risk_fraction(self):
+        adapter = Strategy5Adapter()
+        self.assertEqual(adapter.risk_fraction, 0.012)
+        self.assertEqual(adapter.max_micro_risk_fraction, 0.018)
+        self.assertTrue(adapter.micro_capital_mode)
+
 
 if __name__ == '__main__':
     unittest.main()

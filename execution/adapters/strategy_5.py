@@ -30,6 +30,8 @@ class Strategy5Adapter(BaseStrategy):
         self.strat = MicroAFCXStrategy(name="chien_thuat_5", leverage=self.leverage)
         self.min_notional_target = self.strat.min_notional_target
         self.micro_capital_mode = self.strat.micro_capital_mode
+        self.risk_fraction = getattr(self.strat, 'risk_fraction', 0.012)
+        self.max_micro_risk_fraction = getattr(self.strat, 'max_micro_risk_fraction', 0.018)
         self.session_mgr = self.strat.session_mgr
         self.last_trade_close_time = self.strat.last_trade_close_time
 

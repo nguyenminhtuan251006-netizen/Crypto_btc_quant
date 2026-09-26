@@ -21,6 +21,7 @@ import argparse
 import fcntl
 import json
 from datetime import datetime
+from decimal import Decimal, ROUND_UP
 import pandas as pd
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -602,6 +603,39 @@ def _run_daemon(strategy_name, poll_interval, resolved_mode):
 
                         universe_mgr.refresh_exchange_metadata(base_url=base_url)
                         qty = universe_mgr.quantize_qty(target_sym, raw_qty)
+
+                        # Micro-Capital smart clamp to exchange minimums if within safe max risk
+                        is_micro = getattr(strategy, 'micro_capital_mode', False)
+                        if is_micro:
+                            metadata = universe_mgr.get_symbol_metadata(target_sym)
+                            min_sym_qty = float(metadata.get("market_min_qty", metadata.get("min_qty", 0.0)))
+                            min_sym_notional = float(metadata.get("min_notional", 0.0))
+                            step_size = float(metadata.get("market_step_size", metadata.get("step_size", 0.001)))
+                            actual_notional = qty * cand_entry_p
+
+                            if qty < min_sym_qty or actual_notional < min_sym_notional:
+                                target_notional_min = max(min_sym_notional, min_sym_qty * cand_entry_p)
+                                needed_raw = target_notional_min / cand_entry_p
+                                step_dec = Decimal(str(step_size))
+                                candidate_qty = float((Decimal(str(needed_raw)) / step_dec).to_integral_value(rounding=ROUND_UP) * step_dec)
+                                candidate_qty = max(candidate_qty, min_sym_qty)
+                                candidate_notional = candidate_qty * cand_entry_p
+
+                                max_micro_risk = getattr(strategy, 'max_micro_risk_fraction', 0.018)
+                                potential_risk_usdt = candidate_notional * (sl_pct + 0.0014)
+                                risk_ratio = potential_risk_usdt / equity if equity > 0 else 1.0
+
+                                if risk_ratio <= max_micro_risk:
+                                    clamp_msg = (
+                                        f"[{now_str}] ℹ️ [MICRO-CAPITAL] Tự động nâng vị thế lên sàn tối thiểu của {target_sym}: "
+                                        f"{candidate_qty} (~{candidate_notional:.2f} USDT). Rủi ro SL: {risk_ratio*100:.2f}% vốn "
+                                        f"(<= ngưỡng an toàn {max_micro_risk*100:.1f}%)."
+                                    )
+                                    print(clamp_msg)
+                                    with open(log_file, "a") as f:
+                                        f.write(clamp_msg + "\n")
+                                    qty = candidate_qty
+
                         size_skip = entry_size_skip_reason(
                             universe_mgr=universe_mgr,
                             symbol=target_sym,

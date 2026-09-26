@@ -56,6 +56,8 @@ class MicroAFCXStrategy(AFCXStrategy):
         )
         self.min_notional_target = min_notional_target  # 15.0 USDT sàn (ký quỹ ~1.5 USDT ở đòn bẩy 10x)
         self.micro_capital_mode = True
+        self.risk_fraction = 0.012  # Ngân sách rủi ro 1.2% vốn cho tài khoản nhỏ
+        self.max_micro_risk_fraction = 0.018  # Trần rủi ro tối đa 1.8% vốn khi clamp Notional tối thiểu sàn
 
         # Trailing Take Profit: Cơ chế Bậc Thang 2 Tầng (Chống quét râu)
         self.enable_trailing = True
