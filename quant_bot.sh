@@ -78,11 +78,7 @@ case "$COMMAND" in
         echo "  • Máy chủ Linux:   Hoạt động độc lập 24/7 (Tắt app / tắt máy vẫn chạy)"
         echo "================================================================================"
 
-        if [[ "$STRATEGY" = "chien_thuat_4" || "$STRATEGY" = "chien_thuat_5" || "$STRATEGY" = "strategy_4" || "$STRATEGY" = "strategy_5" ]]; then
-            nohup env PYTHONUNBUFFERED=1 "$PYTHON_BIN" -u "$WORKSPACE_DIR/execution/daemon.py" --strategy "$STRATEGY" --mode "$MODE" >> "$LOG_FILE" 2>&1 &
-        else
-            nohup env PYTHONUNBUFFERED=1 "$PYTHON_BIN" -u "$WORKSPACE_DIR/execution/daemon.py" --strategy "$STRATEGY" --mode "$MODE" > /dev/null 2>> "$LOG_FILE" &
-        fi
+        nohup env PYTHONUNBUFFERED=1 "$PYTHON_BIN" -u "$WORKSPACE_DIR/execution/daemon.py" --strategy "$STRATEGY" --mode "$MODE" > /dev/null 2>> "$LOG_FILE" &
         BOT_PID=$!
         echo "$BOT_PID" > "$PID_FILE"
 
@@ -165,12 +161,12 @@ case "$COMMAND" in
                 echo "  • Môi trường:          $(echo "$MODE_ARG" | tr '[:lower:]' '[:upper:]')"
                 echo "  • Thời gian chạy:      $UPTIME"
                 echo "  • Bộ nhớ tiêu thụ:     $MEM"
-                if [ "$STRAT_ARG" = "chien_thuat_4" ] && [ -f "$WORKSPACE_DIR/execution/afcx_daemon.py" ]; then
+                if [[ "$STRAT_ARG" =~ ^(chien_thuat_4|chien_thuat_5|strategy_4|strategy_5)$ ]] && [ -f "$WORKSPACE_DIR/execution/afcx_daemon.py" ]; then
                     PROCESS_AGE=$(ps -p "$PID" -o etimes= 2>/dev/null | tr -d ' ')
                     SOURCE_MTIME=$(stat -c %Y "$WORKSPACE_DIR/execution/afcx_daemon.py" 2>/dev/null)
                     if [[ "$PROCESS_AGE" =~ ^[0-9]+$ && "$SOURCE_MTIME" =~ ^[0-9]+$ ]] &&
                        (( SOURCE_MTIME > $(date +%s) - PROCESS_AGE )); then
-                        echo "  ⚠️ Mã bot 4 đã đổi sau khi tiến trình khởi động. Nạp mã mới: ./quant_bot.sh restart chien_thuat_4 $MODE_ARG"
+                        echo "  ⚠️ Mã bot ($STRAT_ARG) đã đổi sau khi tiến trình khởi động. Nạp mã mới: ./quant_bot.sh restart $STRAT_ARG $MODE_ARG"
                     fi
                 fi
             done
